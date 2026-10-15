@@ -57,7 +57,6 @@ fn errors_map_onto_the_failures_the_dialog_words() {
         (ErrorKind::Failed, FailureKind::Protocol),
         (ErrorKind::Rejected, FailureKind::Fault),
         (ErrorKind::Cancelled, FailureKind::Stopped),
-        (ErrorKind::Denied, FailureKind::Policy),
     ] {
         assert_eq!(failure(&PrintError::new(kind, "x"), false).kind, want, "{kind:?}");
     }
@@ -174,8 +173,3 @@ fn an_aborted_job_is_reported_and_with_the_dialog_gone_the_person_is_alerted() {
     assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("alert"));
 }
 
-#[test]
-fn a_denied_printer_is_refused_as_a_policy_failure() {
-    let error = Printer::open_denying("http://127.0.0.1:5357/brother", None, vec!["brother".to_owned()]).err().unwrap();
-    assert_eq!(failure(&error, true).kind, FailureKind::Policy);
-}

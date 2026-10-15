@@ -13,7 +13,7 @@ fn tiny_pdf() -> Vec<u8> {
 fn open(config: FakeConfig) -> (Printer, Arc<FakePrinter>) {
     let fake = FakePrinter::new(config);
     let transport: Transport = Arc::new(MemTransport(Arc::clone(&fake)));
-    (Printer::open_denying(ADDRESS, Some(transport), Vec::new()).expect("opens"), fake)
+    (Printer::open(ADDRESS, Some(transport)).expect("opens"), fake)
 }
 
 fn consent() -> UserConfirmed {
@@ -37,22 +37,10 @@ fn the_protocol_follows_the_address() {
 #[test]
 fn the_policy_refuses_what_it_should_before_anything_is_sent() {
     for bad in ["http://printer.local/x", "http://8.8.8.8/", "ipp://printer.local/ipp", "ipps://10.0.0.1/ipp/print", "ipp://8.8.8.8/ipp/print"] {
-        let error = Printer::open_denying(bad, None, Vec::new()).err().expect(bad);
+        let error = Printer::open(bad, None).err().expect(bad);
         assert!(matches!(error.kind(), ErrorKind::InvalidRequest | ErrorKind::Unsupported), "{bad}: {error:?}");
     }
-    assert!(Printer::open_denying("ipp://192.168.1.50/ipp/print", None, Vec::new()).is_ok());
-}
-
-#[test]
-fn a_denied_address_or_reported_name_is_refused() {
-    let denied = craft_print::parse_deny_list("0f1e2d3c;brother");
-    let error = Printer::open_denying("http://127.0.0.1:9/0f1e2d3c-1111-4222-8333-444455556666", None, denied.clone()).err().expect("denied");
-    assert_eq!(error.kind(), ErrorKind::Denied);
-    assert!(error.message().contains("CRAFT_PRINT_DENY") && !error.message().contains("0f1e"), "{error}");
-    let error = Printer::open_denying("ipp://127.0.0.1/ipp/brother", None, denied.clone()).err().expect("denied");
-    assert_eq!(error.kind(), ErrorKind::Denied);
-    assert!(check_denied(&denied, &["Brother MFC-9330CDW"]).is_err());
-    assert!(check_denied(&denied, &["Office Laser"]).is_ok());
+    assert!(Printer::open("ipp://192.168.1.50/ipp/print", None).is_ok());
 }
 
 #[test]

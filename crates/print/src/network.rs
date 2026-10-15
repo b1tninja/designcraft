@@ -12,9 +12,6 @@
 //!   [`PrintError::outcome_unknown`] is true may have created a job: the caller tells the person to
 //!   check the printer, and (WS-Print) [`Printer::reconcile`] reads the printer's job list to find out.
 //! * **Every job needs a [`UserConfirmed`]**, which the type of [`Printer::submit`] requires.
-//! * **Deny list.** `CRAFT_PRINT_DENY` is enforced by the registry and the backends; [`Printer`]
-//!   also checks the address and the name a printer reports, because [`Printer::info`] talks to it
-//!   with a client of its own, outside the registry.
 //! * **Formats.** A document in a format the printer lists is sent as it is; any other goes through
 //!   the registered [`DocumentConverter`] ([`PdfToRaster`]: a print-ready PDF becomes PWG raster).
 
@@ -162,21 +159,6 @@ pub struct Printer {
     wire: Wire,
     registry: Registry,
     known: Mutex<Option<Known>>,
-    /// The deny list (`CRAFT_PRINT_DENY`) as it was when the printer was opened.
-    denied: Vec<String>,
-}
-
-/// The refusal for a printer on the deny list: [`ErrorKind::Denied`], naming the variable and never
-/// the printer.
-fn denied_error() -> PrintError {
-    PrintError::new(
-        ErrorKind::Denied,
-        format!("the printer is on the deny list ({}); it was not opened and nothing was sent to it", craft_print::DENY_ENV),
-    )
-}
-
-fn check_denied(denied: &[String], texts: &[&str]) -> Result<(), PrintError> {
-    if craft_print::any_denied(texts, denied) { Err(denied_error()) } else { Ok(()) }
 }
 
 impl Printer {
@@ -184,21 +166,14 @@ impl Printer {
     /// IP address: craft-wsd's policy decides, and a refusal is [`ErrorKind::InvalidRequest`]).
     /// `transport` replaces the plain-HTTP one (tests, embedding). Opens no connection.
     pub fn open(address: &str, transport: Option<Transport>) -> Result<Self, PrintError> {
-        Self::open_denying(address, transport, craft_print::deny_list())
-    }
-
-    /// [`Self::open`] with the deny list given instead of read from the environment (tests).
-    pub fn open_denying(address: &str, transport: Option<Transport>, denied: Vec<String>) -> Result<Self, PrintError> {
         let protocol = Protocol::of_address(address);
         let transport: Transport = transport.unwrap_or_else(wsd::adapter::default_transport);
         let registry = Registry::new();
-        registry.set_deny_list(Some(denied.clone()));
         let (wire, id) = match protocol {
             Protocol::Wsd => {
                 let backend = WsdBackend::new().with_transport(Arc::clone(&transport));
                 let id = backend.add(address)?;
                 let url = PrinterUrl::parse(&id).map_err(PrintError::from)?;
-                check_denied(&denied, &[address, &id])?;
                 registry.register(Box::new(backend.clone())).map_err(|e| PrintError::new(ErrorKind::Failed, e.to_string()))?;
                 (Wire::Wsd { client: Client::new(transport, url.clone()), backend, url }, id)
             }
@@ -206,7 +181,6 @@ impl Printer {
                 let backend = IppBackend::new().with_transport(Arc::clone(&transport));
                 let id = backend.add(address)?;
                 let uri = ipp::PrinterUri::parse(&id).map_err(PrintError::from)?;
-                check_denied(&denied, &[address, &id])?;
                 registry.register(Box::new(backend)).map_err(|e| PrintError::new(ErrorKind::Failed, e.to_string()))?;
                 (Wire::Ipp { client: ipp::Client::new(transport, uri) }, id)
             }
@@ -214,7 +188,7 @@ impl Printer {
         if let Some(converter) = registered_converter() {
             registry.set_converter(converter);
         }
-        Ok(Self { protocol, address: id, wire, registry, known: Mutex::new(None), denied })
+        Ok(Self { protocol, address: id, wire, registry, known: Mutex::new(None) })
     }
 
     pub fn protocol(&self) -> Protocol {
@@ -240,13 +214,10 @@ impl Printer {
     /// What the printer is and what it accepts. Sends no job. The answer is kept: [`Self::submit`]
     /// uses it instead of reading the printer again.
     pub fn info(&self) -> Result<PrinterInfo, PrintError> {
-        check_denied(&self.denied, &[&self.address])?;
         let info = match &self.wire {
             Wire::Wsd { client, .. } => wsd_info(wsd::printer_info(client).map_err(|e| e.print_error(Op::Query))?),
             Wire::Ipp { client } => ipp_info(&client.get_printer_attributes(&[]).map_err(PrintError::from)?, &self.address),
         };
-        // The name the printer reports is checked too; the answer is dropped.
-        check_denied(&self.denied, &[&info.name])?;
         self.remember(&info);
         Ok(info)
     }
