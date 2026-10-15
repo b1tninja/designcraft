@@ -326,8 +326,11 @@ pub fn open_print(app: &mut DesignApp) {
     let printer = p["default"].as_str().map(str::to_string).or_else(|| p["printers"][0].as_str().map(str::to_string)).unwrap_or_default();
     app.ui.dialog = Some(Dialog::new(
         "print",
-        json!({"printers": p["printers"], "printer": printer, "copies": 1, "range": "all", "pages": "1", "spreads": false, "marks": false, "bleed": false}),
+        json!({"printers": p["printers"], "printer": printer, "copies": 1, "range": "all", "pages": "1", "spreads": false, "marks": false, "bleed": false, "destination": "system"}),
     ));
+    // The confirmation of a network print is never kept: it clears when the dialog opens.
+    #[cfg(not(target_arch = "wasm32"))]
+    app.net_print.state.dialog_opened();
 }
 
 /// File › Export PDF…: the "Export PDF" options dialog, seeded from the persisted settings
@@ -346,7 +349,33 @@ pub fn open_pdf_export(app: &mut DesignApp) {
     app.ui.dialog = Some(Dialog::new("pdfExport", fields));
 }
 
-fn print_dialog(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+/// File › Print › Destination: the system's printers (its spooler) or a network printer the person
+/// adds by address (WS-Print or IPP). Not offered on the web, which has no sockets.
+#[cfg(not(target_arch = "wasm32"))]
+fn print_destination(app: &mut crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    let network = d.s("destination") == "network";
+    ui.horizontal(|ui| {
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Destination:"));
+        for (v, label) in [("system", "System printer"), ("network", "Network printer")] {
+            if ui.radio(d.s("destination") == v, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
+                d.fields.insert("destination".into(), json!(v));
+            }
+        }
+    });
+    if network {
+        let lang = app.ui.language.clone();
+        app.net_print.show(ui, &lang, app.session.active().is_some());
+        ui.separator();
+    }
+}
+
+fn print_dialog(app: &mut crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    #[cfg(not(target_arch = "wasm32"))]
+    print_destination(app, ui, d);
+    #[cfg(not(target_arch = "wasm32"))]
+    let network = d.s("destination") == "network";
+    #[cfg(target_arch = "wasm32")]
+    let network = false;
     let printers: Vec<String> = d
         .fields
         .get("printers")
@@ -354,23 +383,9 @@ fn print_dialog(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
         .unwrap_or_default();
     egui::Grid::new("print").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Printer:"));
-        let cur = d.s("printer");
-        if printers.is_empty() {
-            crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "System default")).italics());
-        } else {
-            egui::ComboBox::from_id_salt("printer").selected_text(&cur).width(220.0).show_ui(ui, |ui| {
-                for p in &printers {
-                    if ui.selectable_label(*p == cur, p).clicked() {
-                        d.fields.insert("printer".into(), json!(p));
-                    }
-                }
-            });
+        if !network {
+            print_system_rows(app, ui, d, &printers);
         }
-        ui.end_row();
-        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Copies:"));
-        text_field(ui, d, "copies", 50.0);
-        ui.end_row();
         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Pages:"));
         ui.vertical(|ui| {
             let range = d.s("range");
@@ -393,6 +408,29 @@ fn print_dialog(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         });
         ui.end_row();
     });
+}
+
+/// The system-spooler destination's rows: the printer and the copies.
+fn print_system_rows(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog, printers: &[String]) {
+    {
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Printer:"));
+        let cur = d.s("printer");
+        if printers.is_empty() {
+            crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "System default")).italics());
+        } else {
+            egui::ComboBox::from_id_salt("printer").selected_text(&cur).width(220.0).show_ui(ui, |ui| {
+                for p in printers {
+                    if ui.selectable_label(*p == cur, p).clicked() {
+                        d.fields.insert("printer".into(), json!(p));
+                    }
+                }
+            });
+        }
+        ui.end_row();
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Copies:"));
+        text_field(ui, d, "copies", 50.0);
+        ui.end_row();
+    }
 }
 
 /// The presets offered by the Export PDF dialog, in display order. The stored value is the
@@ -3273,6 +3311,18 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
                 app.activate_import_target(&crate::ImportRequest { purpose: "place".into(), target: Some(target) })?;
             }
             app.place_file(json!({"path": d.s("path"), "pdfPage": d.n("page").unwrap_or(1.0).max(1.0) as u64, "pdfCrop": if crop.is_empty() { "crop".to_string() } else { crop }}))
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        "print" if d.s("destination") == "network" => {
+            // The job is sent on its own thread. The dialog stays up to show it (accepted, printing,
+            // done) and the status bar names the printer; a job that cannot start says why.
+            let pages = if d.s("range") == "all" { Value::Null } else { json!(d.s("pages")) };
+            let r = app.network_send(&json!({"pages": pages, "spreads": d.b("spreads"), "marks": d.b("marks"), "bleed": d.b("bleed")}));
+            app.ui.dialog = Some(d);
+            if let Err(e) = &r {
+                app.status(e.clone());
+            }
+            r.map(|()| json!({"network": true}))
         }
         "print" => {
             let pages = if d.s("range") == "all" { Value::Null } else { json!(d.s("pages")) };

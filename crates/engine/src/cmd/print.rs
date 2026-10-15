@@ -41,6 +41,29 @@ fn print(s: &mut Session, p: &Value) -> Result<Value> {
     print_with(s, p, craft_print::submit)
 }
 
+/// The print-ready PDF of the pages a print would send (`pages`, `spreads`, `marks`, `bleed` as in
+/// `file.print`), for a destination the host sends itself: a network printer's worker runs off the
+/// session's thread, so it takes the bytes rather than the document.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Debug)]
+pub struct PrintDocument {
+    pub pdf: Vec<u8>,
+    /// How many pages (or spreads) the PDF has.
+    pub pages: usize,
+    /// The document's title, for the job's name.
+    pub title: String,
+}
+
+/// Export the active document as a print-ready PDF (see [`PrintDocument`]). Sends nothing.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn print_document(s: &mut Session, p: &Value) -> Result<PrintDocument> {
+    let d = &s.doc()?.doc;
+    let opts = super::export::options(p, d.page_count())?;
+    let pdf = designcraft_pdf::export_pdf(d, &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
+    let pages = opts.pages.as_ref().map_or(d.page_count(), |v| v.len());
+    Ok(PrintDocument { pdf, pages, title: d.title.clone() })
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn print_with(
     s: &mut Session,
@@ -84,7 +107,8 @@ mod tests {
             assert!(command.contains(&"print-scaling=auto-fit"));
             assert!(!command.iter().any(|a| a.starts_with("sides=")));
         } else {
-            assert_eq!(command[0], "powershell");
+            // Windows: older craft-print previewed a PowerShell command; the in-process XPS path names itself.
+            assert!(matches!(command[0], "powershell" | "xps-print"), "{command:?}");
         }
         assert!(r["bytes"].as_u64().unwrap() > 500);
         assert!(s.execute("file.print", &json!({"pages": "9", "dryRun": true})).is_err());

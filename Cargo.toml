@@ -13,6 +13,8 @@ repository = "https://github.com/storytold/designcraft"
 [workspace.dependencies]
 # Shared writer; the immutable revision must be published before this consumer.
 craft-pdf = { git = "https://github.com/storytold/craft-libs", rev = "c3487320b2d1de657b860b3c8abb44e1f2b32bd8", version = "=0.1.0", default-features = false }
+# Print backends and registry (WS-Print, IPP, tracked jobs, deny list): storytold/craft-libs#116 until it merges; then pin an immutable revision.
+craft-print = { git = "https://github.com/storytold/craft-libs", version = "0.1.0", rev = "refs/pull/116/head" }
 # internal
 designcraft-geom = { path = "crates/geom" }
 designcraft-color = { path = "crates/color" }
@@ -22,6 +24,7 @@ designcraft-compose = { path = "crates/compose" }
 designcraft-images = { path = "crates/images" }
 designcraft-render = { path = "crates/render" }
 designcraft-pdf = { path = "crates/pdf" }
+designcraft-print = { path = "crates/print" }
 designcraft-idml = { path = "crates/idml" }
 designcraft-epub = { path = "crates/epub" }
 designcraft-pptx = { path = "crates/pptx" }
@@ -83,7 +86,7 @@ craft-cms = { version = "0.1.0", git = "https://github.com/storytold/craft-libs"
 
 # ui
 # Shared frontend components; keep this dependency above the engine boundary.
-craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "5c874d51eeb3de70e735c8ce87a59a7dedd47675", features = ["serde"] }
+craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "refs/pull/112/head", features = ["serde"] }
 egui = "0.36"
 egui_extras = { version = "0.36", default-features = false, features = ["svg"] }
 eframe = { version = "0.36", default-features = false }
