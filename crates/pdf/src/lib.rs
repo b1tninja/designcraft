@@ -123,6 +123,11 @@ pub struct PdfOptions {
     pub tagged: bool,
     /// Interactive PDF: placed video and sound are embedded and play in Screen annotations.
     pub media: bool,
+    /// A print-only export: the pages carry no annotations at all (no hyperlinks, buttons, form
+    /// fields or media), only what is drawn. Annotations do not print, and a spooler path that
+    /// re-frames pages (shrink-to-fit) refuses a page that has any. Everything drawn keeps its
+    /// look; only the interactive layer is left out. Not for a PDF a person keeps.
+    pub print: bool,
 }
 
 impl Default for PdfOptions {
@@ -140,6 +145,7 @@ impl Default for PdfOptions {
             created: None,
             tagged: false,
             media: false,
+            print: false,
         }
     }
 }

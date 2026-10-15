@@ -184,7 +184,9 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
     if ex.rgb_only {
         ex.warn("PDF/A: CMYK colours were converted to RGB (no CMYK output intent profile is available yet)");
     }
-    if let Some(o) = crate::links::outline(doc, &sheets) {
+    if !opts.print
+        && let Some(o) = crate::links::outline(doc, &sheets)
+    {
         pdf.set_outline(o);
     }
     for (sheet_idx, sh) in sheets.iter().enumerate() {
@@ -218,8 +220,10 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
         }
         s.pop();
         s.finish();
-        for a in crate::links::annotations(doc, cache, &sheets, sheet_idx) {
-            page.add_annotation(a);
+        if !opts.print {
+            for a in crate::links::annotations(doc, cache, &sheets, sheet_idx) {
+                page.add_annotation(a);
+            }
         }
         page.finish();
     }
@@ -238,8 +242,8 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
     // Form fields (Buttons and Forms) and, for interactive PDF, video and sound; not in PDF/X
     // or PDF/A: this update comes after krilla's validator ran, and its NeedAppearances fields and
     // Screen annotations aren't allowed in PDF/A.
-    let fields = crate::forms::collect(doc, &sheets);
-    let media = if opts.media { crate::forms::collect_media(doc, &sheets) } else { Vec::new() };
+    let fields = if opts.print { Vec::new() } else { crate::forms::collect(doc, &sheets) };
+    let media = if opts.media && !opts.print { crate::forms::collect_media(doc, &sheets) } else { Vec::new() };
     if !fields.is_empty() || !media.is_empty() {
         if opts.standard == Standard::PdfX4 {
             warnings.push("PDF/X-4: form fields and media were left out".into());
