@@ -97,7 +97,7 @@ fn resample(pixels: &[u8], bpp: usize, (sw, sh): (u32, u32), (tw, th): (u32, u32
     out
 }
 
-/// Premultiplied RGBA over white, as 8-bit grey (luma) or RGB.
+/// Premultiplied RGBA over white, as 8-bit grey (Rec. 709 luma) or RGB.
 fn flatten(rgba: impl Iterator<Item = [u8; 4]>, gray: bool) -> Vec<u8> {
     let mut out = Vec::new();
     for px in rgba {
@@ -105,7 +105,7 @@ fn flatten(rgba: impl Iterator<Item = [u8; 4]>, gray: bool) -> Vec<u8> {
         let over = |c: u8| (u16::from(c) + (255 - a)).min(255) as u8;
         let (r, g, b) = (over(px[0]), over(px[1]), over(px[2]));
         if gray {
-            out.push(((u32::from(r) * 299 + u32::from(g) * 587 + u32::from(b) * 114) / 1000) as u8);
+            out.push(((u32::from(r) * 2126 + u32::from(g) * 7152 + u32::from(b) * 722 + 5000) / 10_000) as u8);
         } else {
             out.extend_from_slice(&[r, g, b]);
         }
@@ -121,6 +121,7 @@ mod tests {
     fn flattening_composites_over_white() {
         assert_eq!(flatten([[0, 0, 0, 255], [0, 0, 0, 0]].into_iter(), false), [0, 0, 0, 255, 255, 255]);
         assert_eq!(flatten([[255, 255, 255, 255]].into_iter(), true), [255]);
+        assert_eq!(flatten([[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255]].into_iter(), true), [54, 182, 18]);
     }
 
     #[test]

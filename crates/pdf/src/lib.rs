@@ -37,7 +37,10 @@ mod text;
 mod forms;
 mod pdfx;
 mod transitions;
-pub use export::{BookletKind, BookletOptions, booklet_pairs, export_booklet, export_pdf, export_pdf_with_report, merge_pdfs, sheet_spreads};
+pub use export::{
+    BookletKind, BookletOptions, GrayPage, booklet_pairs, export_booklet, export_pdf, export_pdf_with_report, gray_pdf, merge_pdfs, rec709_luma,
+    sheet_spreads,
+};
 pub use pdfx::{check_pdfx4, cmyk_group_spaces, has_rgb_groups, make_pdfx4};
 pub use transitions::{add_blend_space, add_catalog_entries, add_page_entries, add_transitions};
 
