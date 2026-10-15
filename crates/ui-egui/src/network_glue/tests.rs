@@ -173,3 +173,38 @@ fn an_aborted_job_is_reported_and_with_the_dialog_gone_the_person_is_alerted() {
     assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("alert"));
 }
 
+#[test]
+fn the_colour_choice_says_grayscale_and_a_grayscale_job_sends_gray_pages() {
+    let l = labels("en");
+    assert_eq!(l.color_monochrome, "Grayscale");
+    assert_eq!(l.unsupported_color, "This printer only prints in grayscale.");
+    assert_eq!(labels("de").color_monochrome, "Graustufen");
+    let (mut app, printer) = app(Config::default());
+    let id = app.run("frame.create", json!({"rect": [50, 50, 350, 350]})).unwrap()["id"].clone();
+    app.run("selection.set", json!({"ids": [id]})).unwrap();
+    app.run("object.color", json!({"color": "#ff0000"})).unwrap();
+    query(&mut app);
+    app.net_print.state.draft.confirmed = true;
+    app.net_print.state.draft.color = Some(net::ColorMode::Monochrome);
+    app.network_send(&json!({"pages": "1"})).unwrap();
+    wait(&mut app, |a| matches!(draft(a).job, JobView::Finished(_)));
+    let pdf = printer.job(1).unwrap().document.unwrap();
+    let colour = designcraft_engine::print_document(&mut app.session, &json!({"pages": "1"})).unwrap().pdf;
+    let pc = designcraft_render::render_pdf_page(&colour, 0, 300).unwrap();
+    assert!(pc.data().iter().any(|p| p.r != p.g || p.g != p.b), "the document has colour");
+    let pm = designcraft_render::render_pdf_page(&pdf, 0, 300).unwrap();
+    assert!(pm.data().iter().all(|p| p.r == p.g && p.g == p.b), "the sent pages are gray");
+}
+
+#[test]
+fn queried_printers_are_remembered_by_their_reported_name_for_the_session() {
+    let (mut app, _) = app(Config::default());
+    assert!(app.net_print.known().is_empty());
+    query(&mut app);
+    app.net_print.remember_queried();
+    app.net_print.remember_queried();
+    let name = draft(&app).printer().map(|p| p.name.clone()).unwrap();
+    assert_eq!(app.net_print.known(), [(name, ADDRESS.to_owned())]);
+    app.net_print.use_address("127.0.0.1:5358/other");
+    assert!(draft(&app).printer().is_none(), "another address is another printer");
+}

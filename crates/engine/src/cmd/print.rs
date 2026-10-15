@@ -59,9 +59,42 @@ pub struct PrintDocument {
 pub fn print_document(s: &mut Session, p: &Value) -> Result<PrintDocument> {
     let d = &s.doc()?.doc;
     let opts = super::export::options(p, d.page_count())?;
-    let pdf = designcraft_pdf::export_pdf(d, &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
+    let mut pdf = designcraft_pdf::export_pdf(d, &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
+    if p.get("grayscale").and_then(Value::as_bool).unwrap_or(false) {
+        pdf = grayscale_pdf(&pdf, Some(&d.title))?;
+    }
     let pages = opts.pages.as_ref().map_or(d.page_count(), |v| v.len());
     Ok(PrintDocument { pdf, pages, title: d.title.clone() })
+}
+
+/// Resolution the gray pages are composed at.
+#[cfg(not(target_arch = "wasm32"))]
+const GRAY_DPI: f64 = 300.0;
+
+/// The print-ready PDF with every page converted to Rec. 709 gray (rendered at 300 dpi over white
+/// and stored as one gray picture per page), so a "Grayscale" print is gray whatever the driver does.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn grayscale_pdf(pdf: &[u8], title: Option<&str>) -> Result<Vec<u8>> {
+    let count =
+        designcraft_render::pdf_page_count(pdf).filter(|n| *n > 0).ok_or_else(|| EngineError::Other("no pages to convert to grayscale".into()))?;
+    let mut pages = Vec::with_capacity(count);
+    for i in 0..count {
+        let (w, h) = designcraft_render::pdf_page_size(pdf, i).ok_or_else(|| EngineError::Other(format!("page {} could not be read", i + 1)))?;
+        let side = (w.max(h) * GRAY_DPI / 72.0).round().clamp(1.0, 8000.0) as u32;
+        let pm =
+            designcraft_render::render_pdf_page(pdf, i, side).ok_or_else(|| EngineError::Other(format!("page {} could not be rendered", i + 1)))?;
+        let pixels: Vec<u8> = pm
+            .data()
+            .iter()
+            .map(|p| {
+                // Premultiplied RGBA over white.
+                let over = |c: u8| (u16::from(c) + (255 - u16::from(p.a))).min(255) as u8;
+                designcraft_pdf::rec709_luma(over(p.r), over(p.g), over(p.b))
+            })
+            .collect();
+        pages.push(designcraft_pdf::GrayPage { points: (w as f32, h as f32), size: (u32::from(pm.width()), u32::from(pm.height())), pixels });
+    }
+    designcraft_pdf::gray_pdf(&pages, title).map_err(|e| EngineError::Other(e.to_string()))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -72,16 +105,23 @@ fn print_with(
 ) -> Result<Value> {
     let d = &s.doc()?.doc;
     let opts = super::export::options(p, d.page_count())?;
+    let grayscale = p.get("grayscale").and_then(Value::as_bool).unwrap_or(false);
     let copies = p.get("copies").and_then(Value::as_u64).unwrap_or(1).clamp(1, 999) as u32;
     let job = craft_print::Job {
         printer: str_param(p, "printer").map(str::to_string),
         copies,
+        // The queue's own default paper, the page shrunk to fit it: a document's own page size
+        // (a slide, an artboard) is not a paper the queue has to list. No media is ever demanded.
         scaling: craft_print::Scaling::ShrinkToFit,
+        grayscale,
         title: d.title.clone(),
         ..craft_print::Job::default()
     };
     let dry = p.get("dryRun").and_then(Value::as_bool).unwrap_or(false);
-    let pdf = designcraft_pdf::export_pdf(&super::interchange::with_pdf_boxes(d), &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
+    let mut pdf = designcraft_pdf::export_pdf(&super::interchange::with_pdf_boxes(d), &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
+    if grayscale && !dry {
+        pdf = grayscale_pdf(&pdf, Some(&d.title))?;
+    }
     let command = craft_print::command_preview(&job).map_err(|e| bad("file.print", e.to_string()))?;
     let pages = opts.pages.as_ref().map_or(d.page_count(), |v| v.len());
     let out = json!({"printer": job.printer, "copies": copies, "pages": pages, "command": command, "bytes": pdf.len()});
@@ -142,5 +182,61 @@ mod tests {
         assert!(refusal.to_string().contains("printer offline"));
         print_with(&mut s, &json!({"dryRun": true}), |_, _| panic!("dry runs must not spool")).unwrap();
         assert!(print_with(&mut s, &json!({"pages": "9"}), |_, _| panic!("invalid ranges must not spool")).is_err());
+    }
+
+    /// C: a slide-sized document (16:9, 13.33 x 7.50 in) is printed on the queue's own default paper,
+    /// the page shrunk to fit; no paper is demanded of the queue.
+    #[test]
+    fn a_custom_page_size_uses_the_default_paper_and_shrinks_to_fit() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"width": 960.0, "height": 540.0, "pages": 1})).unwrap();
+        let mut seen = None;
+        print_with(&mut s, &json!({"printer": "Office"}), |_, job| {
+            seen = Some(job.clone());
+            Ok("ok".into())
+        })
+        .unwrap();
+        let job = seen.unwrap();
+        assert_eq!(job.scaling, craft_print::Scaling::ShrinkToFit);
+        assert!(!job.grayscale);
+        let r = s.execute("file.print", &json!({"dryRun": true})).unwrap();
+        let command = format!("{:?}", r["command"]);
+        assert!(!command.contains("media"), "no paper size is asked for: {command}");
+        assert!(!command.contains("13.33"), "{command}");
+    }
+
+    /// B: a grayscale print sends a PDF whose pixels are all gray (Rec. 709) and tells the driver.
+    #[test]
+    fn grayscale_prints_gray_pages_and_sets_the_driver_hint() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        let id = s.execute("frame.create", &json!({"rect": [50, 50, 350, 350]})).unwrap()["id"].clone();
+        s.execute("selection.set", &json!({"ids": [id]})).unwrap();
+        s.execute("object.color", &json!({"color": "#ff0000"})).unwrap();
+        let coloured = print_document(&mut s, &json!({})).unwrap();
+        let gray = print_document(&mut s, &json!({"grayscale": true})).unwrap();
+        assert_eq!(gray.pages, coloured.pages);
+        let pc = designcraft_render::render_pdf_page(&coloured.pdf, 0, 400).unwrap();
+        assert!(pc.data().iter().any(|p| p.r != p.g || p.g != p.b), "the colour print has colour");
+        let pm = designcraft_render::render_pdf_page(&gray.pdf, 0, 400).expect("gray page renders");
+        assert!(pm.data().iter().all(|p| p.r == p.g && p.g == p.b), "every pixel is gray");
+        assert_eq!(designcraft_render::pdf_page_size(&gray.pdf, 0), designcraft_render::pdf_page_size(&coloured.pdf, 0));
+        let mut hint = false;
+        print_with(&mut s, &json!({"grayscale": true}), |pdf, job| {
+            hint = job.grayscale;
+            assert!(pdf.starts_with(b"%PDF-"));
+            Ok("ok".into())
+        })
+        .unwrap();
+        assert!(hint);
+    }
+
+    #[test]
+    fn rec709_weights() {
+        assert_eq!(designcraft_pdf::rec709_luma(255, 255, 255), 255);
+        assert_eq!(designcraft_pdf::rec709_luma(0, 0, 0), 0);
+        assert_eq!(designcraft_pdf::rec709_luma(255, 0, 0), 54);
+        assert_eq!(designcraft_pdf::rec709_luma(0, 255, 0), 182);
+        assert_eq!(designcraft_pdf::rec709_luma(0, 0, 255), 18);
     }
 }

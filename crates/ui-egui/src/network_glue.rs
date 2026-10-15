@@ -62,6 +62,9 @@ pub(crate) struct NetTasks {
     printer: String,
     /// The last stage line shown for the job, to put on the status bar only when it changes.
     shown: Option<String>,
+    /// Network printers queried in this session (reported name, address as typed), so the printer
+    /// list offers them again without retyping. Memory only: nothing is written to disk.
+    known: Vec<(String, String)>,
 }
 
 impl Default for NetTasks {
@@ -69,7 +72,15 @@ impl Default for NetTasks {
     /// (PDF to PWG raster, with this build's renderer) is registered once, here.
     fn default() -> Self {
         wire::register_pdf_converter();
-        Self { transport: None, state: net::State::default(), query: None, queried: Queried::default(), printer: String::new(), shown: None }
+        Self {
+            transport: None,
+            state: net::State::default(),
+            query: None,
+            queried: Queried::default(),
+            printer: String::new(),
+            shown: None,
+            known: Vec::new(),
+        }
     }
 }
 
@@ -77,6 +88,30 @@ impl NetTasks {
     pub(crate) fn set_transport(&mut self, transport: Transport) {
         self.transport = Some(transport);
         self.query = None;
+    }
+
+    /// Remember the printer the last query reached (by the name it reported), for this session.
+    pub(crate) fn remember_queried(&mut self) {
+        let draft = &self.state.draft;
+        if let Some(p) = draft.printer() {
+            let (name, url) = (p.name.trim().to_owned(), draft.url.trim().to_owned());
+            if !name.is_empty() && !url.is_empty() && !self.known.iter().any(|(_, u)| *u == url) {
+                self.known.push((name, url));
+            }
+        }
+    }
+
+    /// The network printers queried so far: (name, address).
+    pub(crate) fn known(&self) -> &[(String, String)] {
+        &self.known
+    }
+
+    /// Make the network printer at `url` the destination's address (the query is then to be run).
+    pub(crate) fn use_address(&mut self, url: &str) {
+        if self.state.draft.url != url {
+            self.state.draft.url = url.to_owned();
+            self.state.draft.address_edited();
+        }
     }
 
     pub(crate) fn transport(&self) -> Option<Transport> {
@@ -398,7 +433,7 @@ pub(crate) fn labels(lang: &str) -> Labels<'static> {
         photo: tl!("Photo"),
         color: tl!("Color:"),
         color_color: tl!("Colour"),
-        color_monochrome: tl!("Black and white"),
+        color_monochrome: tl!("Grayscale"),
         resolution: tl!("Resolution:"),
         resolution_dpi: "{dpi} dpi",
         resolution_dpi_xy: "{x} x {y} dpi",
@@ -407,7 +442,7 @@ pub(crate) fn labels(lang: &str) -> Labels<'static> {
         unsupported_sides: tl!("This printer only prints one-sided."),
         unsupported_orientation: tl!("This printer does not take an orientation setting."),
         unsupported_quality: tl!("This printer does not take a quality setting."),
-        unsupported_color: tl!("This printer only prints in black and white."),
+        unsupported_color: tl!("This printer only prints in grayscale."),
         unsupported_resolution: tl!("This printer does not take a resolution setting."),
         unconfirmed_note: tl!("Not confirmed by the printer"),
         confirm: tl!("I confirm sending this document to this printer"),
@@ -475,7 +510,12 @@ impl DesignApp {
                 _ => "Nothing to print".to_owned(),
             });
         }
-        let doc = designcraft_engine::print_document(&mut self.session, params).map_err(|e| e.to_string())?;
+        // A grayscale choice is honoured in the document itself, not only as the printer's colour hint.
+        let mut params = params.clone();
+        if self.net_print.state.draft.color == Some(net::ColorMode::Monochrome) {
+            params["grayscale"] = json!(true);
+        }
+        let doc = designcraft_engine::print_document(&mut self.session, &params).map_err(|e| e.to_string())?;
         // The attestation comes from the ticked box and nothing else.
         let net = &mut self.net_print;
         let confirmed = UserConfirmed::attest(Some(net.state.draft.confirmed)).map_err(|e| e.to_string())?;
