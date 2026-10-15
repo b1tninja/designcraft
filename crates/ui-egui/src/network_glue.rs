@@ -108,7 +108,6 @@ fn failure(e: &PrintError, open: bool) -> Failure {
     } else {
         match e.kind() {
             ErrorKind::InvalidRequest if open => FailureKind::Policy,
-            ErrorKind::Denied => FailureKind::Policy,
             ErrorKind::InvalidRequest | ErrorKind::ConsentRequired => FailureKind::Invalid,
             ErrorKind::UnsupportedFormat => FailureKind::NoCommonFormat,
             ErrorKind::Unsupported => FailureKind::Unsupported,
