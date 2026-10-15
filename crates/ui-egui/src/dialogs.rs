@@ -496,6 +496,10 @@ fn print_dialog(app: &mut crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         });
         ui.end_row();
     });
+    // Why the last attempt to print failed.
+    if let Some(st) = d.fields.get("status").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+        ui.add(egui::Label::new(egui::RichText::new(st).color(ui.visuals().error_fg_color)).wrap());
+    }
 }
 
 /// The system queue's rows: the copies and Grayscale (the printed pages are gray, not only the
@@ -3407,7 +3411,18 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
                 "file.print",
                 json!({"printer": if printer.is_empty() { Value::Null } else { json!(printer) }, "copies": d.n("copies").unwrap_or(1.0).max(1.0) as u64,
                     "pages": pages, "spreads": d.b("spreads"), "marks": d.b("marks"), "bleed": d.b("bleed"), "grayscale": d.b("grayscale")}),
-            )?;
+            );
+            let r = match r {
+                Ok(r) => r,
+                Err(e) => {
+                    // A print that failed keeps the dialog open with the reason in it (the printer, the
+                    // pages, the driver's or the spooler's answer), to be read, fixed and tried again.
+                    let mut d = d.clone();
+                    d.fields.insert("status".into(), json!(e));
+                    app.ui.dialog = Some(d);
+                    return Err(e);
+                }
+            };
             let printer = r["printer"].as_str().unwrap_or_else(|| crate::i18n::tr(&app.ui.language, "the default printer"));
             app.status(crate::i18n::tr(&app.ui.language, "Sent {count} page(s) to {printer}").replace("{count}", &r["pages"].to_string()).replace("{printer}", printer));
             Ok(r)
@@ -10082,6 +10097,40 @@ mod tests {
         assert_eq!(current_entry(&d, &known, "192.168.0.9"), PrinterEntry::Known("Studio".into(), "192.168.0.9".into()));
         choose_entry(&mut app, &mut d, &PrinterEntry::System("Office".into()));
         assert_eq!((d.s("destination").as_str(), d.s("printer").as_str()), ("system", "Office"));
+    }
+
+    /// A print that fails keeps the dialog open and shows why (no spooler is touched: the page range
+    /// is refused before anything is sent).
+    #[test]
+    fn a_failed_print_stays_in_the_dialog_with_the_reason() {
+        use egui::vec2;
+        use egui_kittest::{Harness, kittest::Queryable};
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let mut d = print_dialog_fields();
+        d.fields.insert("range".into(), json!("range"));
+        d.fields.insert("pages".into(), json!("99"));
+        app.ui.dialog = Some(d);
+        let err = confirm(&mut app).unwrap_err();
+        let shown = app.ui.dialog.as_ref().expect("the dialog is still open").s("status");
+        assert_eq!(shown, err);
+        assert!(!err.is_empty() && app.ui.status == err);
+        let mut ready = false;
+        let mut h = Harness::builder().with_size(vec2(1000.0, 800.0)).with_step_dt(1.0 / 60.0).build_ui_state(
+            move |ui, app: &mut DesignApp| {
+                if !ready {
+                    crate::theme::install_fonts(ui.ctx(), &app.ui.language);
+                    crate::theme::apply(ui.ctx(), &crate::theme::Tokens::for_brightness(crate::theme::Brightness::default()));
+                    ready = true;
+                    return;
+                }
+                show(app, ui.ctx());
+            },
+            app,
+        );
+        h.run_steps(4);
+        assert!(h.query_by_label_contains(err.as_str()).is_some(), "the reason is on screen: {err}");
+        assert!(h.query_by_label("Printer:").is_some());
     }
 
     #[test]
