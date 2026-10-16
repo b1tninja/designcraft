@@ -99,6 +99,10 @@ copies, and the app's own recovery folder are fixed paths, not agent input, and 
 `Document Fonts` folder and each font file in it are checked before they are opened, so a link that
 leads out of the read root is skipped with a note. `file.print` hands a PDF to the system's print
 spooler, which is not a path the agent names.
+`file.printNetwork` sends the pages to a WS-Print or IPP printer at a numeric private, link-local or loopback
+address the agent gives (no host names, no TLS, no discovery). It refuses unless `user_confirmed` is `true`, which
+an agent may set only after the person has agreed to that print; nothing is exported, opened or sent before that.
+A send whose outcome is unknown is an error that says to check the printer, and it is never retried.
 Anything that reads or writes a path goes through one place in the engine (the `io` module). The
 crates below the engine have no file access of their own: the IDML import and the font folders take
 a reader or an access check from the engine, and ICC profiles arrive as bytes. A test scans the

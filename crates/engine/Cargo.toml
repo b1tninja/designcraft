@@ -35,12 +35,16 @@ unicode-segmentation = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 craft-atomic = { workspace = true }
+# Network printing (file.printNetwork): WS-Print and IPP behind craft-print's registry. No socket on the web.
+designcraft-print = { workspace = true }
 tempfile = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 same-file = { workspace = true }
 
 [dev-dependencies]
+# The in-memory fake printers (never in a shipped binary).
+craft-print = { workspace = true, features = ["testing"] }
 designcraft-fonts = { workspace = true, features = ["testing"] }
 zip = { workspace = true }
 hayro-syntax = "0.7.2"

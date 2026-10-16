@@ -1241,6 +1241,7 @@ dependencies = [
  "designcraft-images",
  "designcraft-pdf",
  "designcraft-pptx",
+ "designcraft-print",
  "designcraft-render",
  "designcraft-textimport",
  "designcraft-tools",

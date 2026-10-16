@@ -129,8 +129,9 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
   craft-print: CUPS on macOS/Linux and the Windows PDF raster spooler. Physical printer fidelity
   remains a hardware check. File ▸ Print ▸ Destination ▸ Network printer sends the same pages to a
   WS-Print or IPP printer the person adds by IP address (`designcraft-print`, craft-print's registry;
-  every option three-state, each job confirmed, the status bar names the printer). Not yet: a
-  control-channel/MCP command for it, discovery, TLS (`ipps`), a scanner.
+  every option three-state, each job confirmed, the status bar names the printer). Scripts and agents
+  use `file.printNetwork` (address plus `user_confirmed: true`, set only after the person agreed; private
+  addresses only). Not yet: discovery, TLS (`ipps`), a scanner.
 - **Estimate:** 25–45 h. **Doc:** [hardware-parity.md](hardware-parity.md)
 
 ### 11. Paragraph and character style editing reliability (F)

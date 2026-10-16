@@ -21,6 +21,15 @@ pub fn specs() -> Vec<CommandSpec> {
             has_doc,
             print
         ),
+        cmd!(
+            noundo "file.printNetwork",
+            "Print to a Network Printer",
+            [],
+            None,
+            "{address: \"192.168.0.9\" | \"ipp://192.168.0.9/ipp/print\", user_confirmed: true, pages?, spreads?, marks?, bleed?, grayscale?, copies?: 1, waitSeconds?: 60} → {printer, address, outcome, pages, warnings}; user_confirmed must be true and may be set only after the person has agreed to this print",
+            has_doc,
+            print_network
+        ),
     ]
 }
 
@@ -138,6 +147,92 @@ fn print_with(
         submit(&pdf, &job).map_err(|e| bad("file.print", e.to_string()))?;
     }
     Ok(out)
+}
+
+/// File › Print to a network printer (WS-Print or IPP) by address, for scripts and agents: the same
+/// path as the Print dialog's Network printer destination, without a dialog.
+///
+/// * **Consent.** `user_confirmed` must be `true` and may be set only after the person has agreed to
+///   this print; without it nothing is exported, opened or sent (`UserConfirmed::attest`).
+/// * **Address.** A numeric loopback, link-local or private address; no host names, no TLS, no
+///   credentials, no discovery (the registry's network policy). Nothing is listed or searched for.
+/// * **Sends once.** A send whose outcome is unknown is an error that says to check the printer;
+///   nothing retries it.
+#[cfg(not(target_arch = "wasm32"))]
+fn print_network(s: &mut Session, p: &Value) -> Result<Value> {
+    print_network_with(s, p, None)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn print_network(_: &mut Session, _: &Value) -> Result<Value> {
+    Err(bad("file.printNetwork", "network printing isn't available on the web: export a PDF and print it"))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn print_network_with(s: &mut Session, p: &Value, transport: Option<designcraft_print::network::Transport>) -> Result<Value> {
+    use std::time::Duration;
+
+    use designcraft_print::network as net;
+    const ID: &str = "file.printNetwork";
+    let fail = |e: net::PrintError| {
+        let note = if e.outcome_unknown() { format!(" ({})", net::CHECK_THE_PRINTER) } else { String::new() };
+        bad(ID, format!("{e}{note}"))
+    };
+    let address = str_param(p, "address")
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+        .ok_or_else(|| bad(ID, "address is required, for example 192.168.0.9 or ipp://192.168.0.9/ipp/print"))?;
+    // Consent comes first: without it nothing is exported, opened or sent.
+    let confirmed = net::UserConfirmed::attest(p.get("user_confirmed").and_then(Value::as_bool)).map_err(fail)?;
+    let address = if address.contains("://") { address.to_owned() } else { format!("http://{address}") };
+    net::validate_address(&address).map_err(fail)?;
+    let wait = p.get("waitSeconds").and_then(Value::as_u64).unwrap_or(60).clamp(1, 600);
+    let copies = p.get("copies").and_then(Value::as_u64).unwrap_or(1).clamp(1, 999) as u32;
+    let grayscale = p.get("grayscale").and_then(Value::as_bool).unwrap_or(false);
+
+    let doc = print_document(s, p)?;
+    net::register_pdf_converter();
+    let printer = net::Printer::open(&address, transport).map_err(fail)?;
+    // Ask the printer first, as the dialog's Query does; the job is decided on what it said.
+    let info = printer.info().map_err(fail)?;
+    printer.remember(&info);
+
+    let title: String = doc.title.chars().filter(|c| !c.is_control()).take(120).collect();
+    let mut job = net::Job::default();
+    if !title.trim().is_empty() {
+        job.title = title;
+    }
+    job.copies = copies;
+    job.scaling = net::Scaling::ShrinkToFit;
+    let mut options = net::JobOptions::new();
+    if let Ok(pages) = u32::try_from(doc.pages) {
+        options = options.with_expected_pages(pages);
+    }
+    if grayscale {
+        options = options.with_colour(net::ColourMode::Mono);
+    }
+    let cancel = net::CancelToken::new();
+    let sent = printer.submit(net::Document::pdf(&doc.pdf), job, options, confirmed, &cancel, &mut |_| {}).map_err(fail)?;
+
+    // Follow the accepted job to its end (or `waitSeconds`).
+    let policy =
+        net::WaitPolicy { interval: Some(Duration::from_millis(500)), ..net::WaitPolicy::default() }.with_max_wait(Duration::from_secs(wait));
+    let outcome = match printer.watch(&sent, policy) {
+        Ok(mut watch) => loop {
+            match watch.tick(printer.source()) {
+                net::WatchStep::Pending { next_in } => std::thread::sleep(next_in.min(Duration::from_millis(100))),
+                net::WatchStep::Done(outcome) => break outcome,
+                _ => std::thread::sleep(Duration::from_millis(100)),
+            }
+        },
+        Err(e) => net::WatchOutcome::Failed(e),
+    };
+    let name = net::outcome_name(&outcome);
+    let printer_name = sent.printer_name.clone();
+    if matches!(name, "failed" | "aborted" | "canceled") {
+        return Err(bad(ID, format!("the job to {printer_name} ended as {name}")));
+    }
+    Ok(json!({"printer": printer_name, "address": printer.address(), "outcome": name, "pages": doc.pages, "warnings": sent.warnings}))
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -294,5 +389,84 @@ mod tests {
         assert_eq!(designcraft_pdf::rec709_luma(255, 0, 0), 54);
         assert_eq!(designcraft_pdf::rec709_luma(0, 255, 0), 182);
         assert_eq!(designcraft_pdf::rec709_luma(0, 0, 255), 18);
+    }
+
+    mod network {
+        use std::sync::Arc;
+
+        use designcraft_print::network::wsd::testing::{FakeConfig, FakePrinter, MemTransport};
+
+        use super::*;
+
+        const ADDRESS: &str = "127.0.0.1:5357/printer";
+
+        #[allow(clippy::unwrap_used)] // a test fixture
+        fn session() -> Session {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({"pages": 3})).unwrap();
+            s
+        }
+
+        fn send(s: &mut Session, printer: &Arc<FakePrinter>, params: Value) -> Result<Value> {
+            print_network_with(s, &params, Some(Arc::new(MemTransport(printer.clone()))))
+        }
+
+        #[test]
+        fn nothing_is_exported_opened_or_sent_without_the_confirmation() {
+            let printer = FakePrinter::new(FakeConfig::default());
+            let mut s = session();
+            for params in [
+                json!({"address": ADDRESS}),
+                json!({"address": ADDRESS, "user_confirmed": false}),
+                json!({"address": ADDRESS, "user_confirmed": "yes"}),
+            ] {
+                let e = send(&mut s, &printer, params).unwrap_err().to_string();
+                assert!(e.contains("user_confirmed"), "{e}");
+            }
+            assert_eq!(printer.jobs(), 0);
+            assert!(printer.log().is_empty(), "the printer was not even asked: {:?}", printer.log());
+        }
+
+        #[test]
+        fn a_confirmed_print_sends_the_chosen_pages_and_reports_how_it_ended() {
+            let printer = FakePrinter::new(FakeConfig::default());
+            let mut s = session();
+            let r = send(&mut s, &printer, json!({"address": ADDRESS, "user_confirmed": true, "pages": "2-3", "copies": 2})).unwrap();
+            assert_eq!(r["outcome"], "completed", "{r}");
+            assert_eq!(r["pages"], 2);
+            assert!(r["printer"].as_str().is_some_and(|n| !n.is_empty()), "{r}");
+            assert_eq!(printer.jobs(), 1);
+            let pdf = printer.job(1).unwrap().document.unwrap();
+            assert!(pdf.starts_with(b"%PDF-"));
+            assert_eq!(designcraft_render::pdf_page_count(&pdf), Some(2), "the chosen range, not the whole document");
+        }
+
+        #[test]
+        fn the_address_policy_refuses_host_names_public_addresses_and_tls_before_anything_is_exported() {
+            let printer = FakePrinter::new(FakeConfig::default());
+            let mut s = session();
+            for bad in ["printer.local", "http://8.8.8.8/", "https://10.0.0.1/", "ipp://printer.local/ipp", "ipps://10.0.0.1/ipp/print"] {
+                assert!(send(&mut s, &printer, json!({"address": bad, "user_confirmed": true})).is_err(), "{bad}");
+            }
+            assert!(print_network_with(&mut s, &json!({"user_confirmed": true}), None).is_err(), "no address");
+            assert_eq!(printer.jobs(), 0);
+        }
+
+        #[test]
+        fn a_failed_job_is_an_error_not_a_quiet_success() {
+            use designcraft_print::network::wsd::testing::Ending;
+            let printer = FakePrinter::new(FakeConfig { ending: Ending::Aborts("PrinterStopped"), ..FakeConfig::default() });
+            let mut s = session();
+            let e = send(&mut s, &printer, json!({"address": ADDRESS, "user_confirmed": true})).unwrap_err().to_string();
+            assert!(e.contains("aborted") || e.contains("failed"), "{e}");
+        }
+
+        #[test]
+        fn it_needs_a_document() {
+            let printer = FakePrinter::new(FakeConfig::default());
+            let mut s = Session::new();
+            assert!(send(&mut s, &printer, json!({"address": ADDRESS, "user_confirmed": true})).is_err());
+            assert_eq!(printer.jobs(), 0);
+        }
     }
 }
