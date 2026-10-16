@@ -2099,7 +2099,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("High", "Hoch"),
     ("Photo", "Foto"),
     ("Resolution:", "Auflösung:"),
-    ("Auto", "Automatisch"),
     ("This printer does not take a copies setting.", "Dieser Drucker unterstützt keine Einstellung für die Anzahl der Exemplare."),
     ("This printer only prints one-sided.", "Dieser Drucker druckt nur einseitig."),
     ("This printer does not take an orientation setting.", "Dieser Drucker unterstützt keine Ausrichtungseinstellung."),
