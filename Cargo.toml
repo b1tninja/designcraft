@@ -13,8 +13,6 @@ repository = "https://github.com/storytold/designcraft"
 [workspace.dependencies]
 # Shared writer; the immutable revision must be published before this consumer.
 craft-pdf = { git = "https://github.com/storytold/craft-libs", rev = "c3487320b2d1de657b860b3c8abb44e1f2b32bd8", version = "=0.1.0", default-features = false }
-# Print backends and registry (WS-Print, IPP, tracked jobs, deny list): storytold/craft-libs#116 until it merges; then pin an immutable revision.
-craft-print = { git = "https://github.com/storytold/craft-libs", version = "0.1.0", rev = "refs/pull/116/head" }
 # internal
 designcraft-geom = { path = "crates/geom" }
 designcraft-color = { path = "crates/color" }
@@ -79,7 +77,8 @@ indd = { git = "https://github.com/storytold/indd-utils", branch = "main" }
 # Atomic file replacement for saves and exports (craft-libs).
 craft-atomic = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "e9546e191dd62f2bc1d61eca45dbdc2f1b3c1d8e" }
 # File › Print through the system print spooler (craft-libs).
-craft-print = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "d991bf6792f8ade99c51358bf3c1d902c8cd96b5" }
+# craft-print: storytold/craft-libs#116 (backends, registry, WS-Print, IPP) until it merges; then pin an immutable revision.
+craft-print = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "refs/pull/116/head" }
 
 # ICC colour management: working spaces, transforms, black point compensation (craft-libs).
 craft-cms = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "e9546e191dd62f2bc1d61eca45dbdc2f1b3c1d8e" }
