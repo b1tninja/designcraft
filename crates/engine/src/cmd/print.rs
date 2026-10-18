@@ -17,7 +17,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Print…",
             ["File"],
             Some("Cmd+P"),
-            "{printer?, copies?: 1, pages?: \"1-3,5\", spreads?, marks?, bleed?, dryRun?: bool (export and preview submission without printing)} → {printer, copies, pages, command, bytes}",
+            "{printer?, copies?: 1, pages?: \"1-3,5\", spreads?, marks?, bleed?, grayscale?: bool (send gray pages: every page rendered to Rec. 709 gray, and the driver told), dryRun?: bool (export and preview submission without printing)} → {printer, copies, pages, command, bytes}",
             has_doc,
             print
         ),
@@ -59,12 +59,19 @@ pub struct PrintDocument {
 pub fn print_document(s: &mut Session, p: &Value) -> Result<PrintDocument> {
     let d = &s.doc()?.doc;
     let opts = print_options(p, d.page_count())?;
-    let mut pdf = designcraft_pdf::export_pdf(d, &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
+    let mut pdf = export_print_pdf(d, &s.cache, &opts)?;
     if p.get("grayscale").and_then(Value::as_bool).unwrap_or(false) {
         pdf = grayscale_pdf(&pdf, Some(&d.title))?;
     }
     let pages = opts.pages.as_ref().map_or(d.page_count(), |v| v.len());
     Ok(PrintDocument { pdf, pages, title: d.title.clone() })
+}
+
+/// The PDF a print sends: the document with every placed PDF's content box measured
+/// ([`super::interchange::with_pdf_boxes`]), so a network job and a system queue crop alike.
+#[cfg(not(target_arch = "wasm32"))]
+fn export_print_pdf(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache, opts: &designcraft_pdf::PdfOptions) -> Result<Vec<u8>> {
+    designcraft_pdf::export_pdf(&super::interchange::with_pdf_boxes(d), cache, opts).map_err(|e| EngineError::Other(e.to_string()))
 }
 
 /// The export options of a print: the user's page selection, spreads, marks and bleed, as a print-only
@@ -126,8 +133,7 @@ fn print_with(
         ..craft_print::Job::default()
     };
     let dry = p.get("dryRun").and_then(Value::as_bool).unwrap_or(false);
-    let mut pdf =
-        designcraft_pdf::export_pdf(&super::interchange::with_pdf_boxes(d), &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
+    let mut pdf = export_print_pdf(d, &s.cache, &opts)?;
     if grayscale && !dry {
         pdf = grayscale_pdf(&pdf, Some(&d.title))?;
     }
@@ -172,7 +178,7 @@ mod tests {
         let expected = {
             let d = &s.doc().unwrap().doc;
             let options = print_options(&params, d.page_count()).unwrap();
-            designcraft_pdf::export_pdf(&super::super::interchange::with_pdf_boxes(d), &s.cache, &options).unwrap()
+            export_print_pdf(d, &s.cache, &options).unwrap()
         };
         let r = print_with(&mut s, &params, |pdf, job| {
             // The production export options and full bytes reach the shared spooler boundary.
@@ -285,6 +291,32 @@ mod tests {
         })
         .unwrap();
         assert!(hint);
+    }
+
+    /// A placed PDF whose Bounding Box crop is still unmeasured prints the same through the network
+    /// path (`print_document`) as through the system queue (`print_with`): both measure the box.
+    #[test]
+    fn a_pending_content_box_is_measured_for_both_print_paths() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("frame.create", &json!({"rect": [100, 200, 300, 260], "content": "unassigned"})).unwrap();
+        s.execute("object.fill", &json!({"swatch": "[Black]"})).unwrap();
+        let b64 = s.execute("file.exportPdf", &json!({})).unwrap()["base64"].as_str().unwrap().to_string();
+        let mut t = Session::new();
+        t.execute("file.new", &json!({})).unwrap();
+        t.execute("file.place", &json!({"base64": b64, "name": "a.pdf", "pdfCrop": "contentVisible", "width": 200, "x": 20, "y": 30})).unwrap();
+        for a in std::sync::Arc::make_mut(&mut t.doc_mut().unwrap().doc).assets.values_mut() {
+            std::sync::Arc::make_mut(a).pdf_box = None;
+        }
+        assert!(t.doc().unwrap().doc.assets.values().any(|a| a.content_box_pending()), "the box is pending");
+        let mut sent = None;
+        print_with(&mut t, &json!({}), |pdf, _| {
+            sent = Some(pdf.to_vec());
+            Ok("ok".into())
+        })
+        .unwrap();
+        let network = print_document(&mut t, &json!({})).unwrap();
+        assert_eq!(network.pdf, sent.expect("the job was sent"));
     }
 
     #[test]
