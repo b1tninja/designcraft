@@ -1247,6 +1247,20 @@ pub fn pdf_page_size(bytes: &[u8], page: usize) -> Option<(f64, f64)> {
     Some((w as f64, h as f64))
 }
 
+/// Sizes of every page of a PDF, as [`pdf_page_size`] gives them, from one parse.
+pub fn pdf_page_sizes(bytes: &[u8]) -> Option<Vec<(f64, f64)>> {
+    let pdf = hayro::hayro_syntax::Pdf::new(std::sync::Arc::new(bytes.to_vec())).ok()?;
+    Some(
+        pdf.pages()
+            .iter()
+            .map(|p| {
+                let (w, h) = p.render_dimensions();
+                (w as f64, h as f64)
+            })
+            .collect(),
+    )
+}
+
 /// PDF page `page` as PNG, its longer side about `max_side` pixels, with the `hidden` layers off;
 /// only the `shown` part of it ([`designcraft_doc::Asset::shown_box`]) when given.
 pub fn pdf_page_png(bytes: &[u8], page: usize, max_side: u32, hidden: &[String], shown: Option<[f64; 4]>) -> Option<Vec<u8>> {

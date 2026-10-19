@@ -48,7 +48,7 @@ fn print(s: &mut Session, p: &Value) -> Result<Value> {
 #[derive(Clone, Debug)]
 pub struct PrintDocument {
     pub pdf: Vec<u8>,
-    /// How many pages (or spreads) the PDF has.
+    /// How many sheets the PDF has (a spread is one).
     pub pages: usize,
     /// The document's title, for the job's name.
     pub title: String,
@@ -63,7 +63,8 @@ pub fn print_document(s: &mut Session, p: &Value) -> Result<PrintDocument> {
     if p.get("grayscale").and_then(Value::as_bool).unwrap_or(false) {
         pdf = grayscale_pdf(&pdf, Some(&d.title))?;
     }
-    let pages = opts.pages.as_ref().map_or(d.page_count(), |v| v.len());
+    // The PDF's sheets: printed as spreads, two document pages share one.
+    let pages = designcraft_render::pdf_page_count(&pdf).unwrap_or_else(|| opts.pages.as_ref().map_or(d.page_count(), |v| v.len()));
     Ok(PrintDocument { pdf, pages, title: d.title.clone() })
 }
 
@@ -317,6 +318,19 @@ mod tests {
         .unwrap();
         let network = print_document(&mut t, &json!({})).unwrap();
         assert_eq!(network.pdf, sent.expect("the job was sent"));
+    }
+
+    /// Printed as spreads, a facing-pages document has fewer sheets than pages: the count a network
+    /// job expects is the PDF's sheets, not the document's pages.
+    #[test]
+    fn a_spreads_print_counts_its_sheets() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 4, "facingPages": true})).unwrap();
+        let doc = print_document(&mut s, &json!({"spreads": true})).unwrap();
+        let sheets = designcraft_render::pdf_page_count(&doc.pdf).unwrap();
+        assert!(sheets < 4, "spreads share sheets: {sheets}");
+        assert_eq!(doc.pages, sheets);
+        assert_eq!(print_document(&mut s, &json!({"pages": "2-3"})).unwrap().pages, 2);
     }
 
     #[test]

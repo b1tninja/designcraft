@@ -2139,6 +2139,9 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("The document couldn't be prepared", "Das Dokument konnte nicht vorbereitet werden"),
     ("A setting isn't valid", "Eine Einstellung ist ungültig"),
     ("The print job stopped unexpectedly", "Der Druckauftrag wurde unerwartet beendet"),
+    ("Nothing to print", "Nichts zu drucken"),
+    ("the print job did not start", "der Druckauftrag wurde nicht gestartet"),
+    ("the printer", "der Drucker"),
 ];
 
 #[cfg(test)]

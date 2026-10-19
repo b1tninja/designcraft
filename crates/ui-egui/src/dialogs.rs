@@ -3398,10 +3398,13 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             // done) and the status bar names the printer; a job that cannot start says why.
             let pages = if d.s("range") == "all" { Value::Null } else { json!(d.s("pages")) };
             let r = app.network_send(&json!({"pages": pages, "spreads": d.b("spreads"), "marks": d.b("marks"), "bleed": d.b("bleed")}));
-            app.ui.dialog = Some(d);
+            let mut d = d;
             if let Err(e) = &r {
+                // In the dialog, as the system queue's failure is, and on the status bar.
+                d.fields.insert("status".into(), json!(e));
                 app.status(e.clone());
             }
+            app.ui.dialog = Some(d);
             r.map(|()| json!({"network": true}))
         }
         "print" => {
@@ -10131,6 +10134,21 @@ mod tests {
         h.run_steps(4);
         assert!(h.query_by_label_contains(err.as_str()).is_some(), "the reason is on screen: {err}");
         assert!(h.query_by_label("Printer:").is_some());
+    }
+
+    /// A network print that cannot start says why in the dialog, as the system queue's does.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_network_print_that_cannot_start_shows_the_reason_in_the_dialog() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let mut d = print_dialog_fields();
+        d.fields.insert("destination".into(), json!("network"));
+        app.ui.dialog = Some(d);
+        let err = confirm(&mut app).unwrap_err();
+        let shown = app.ui.dialog.as_ref().expect("the dialog is still open").s("status");
+        assert!(!err.is_empty());
+        assert_eq!(shown, err, "the reason is in the dialog, not only on the status bar");
     }
 
     #[test]

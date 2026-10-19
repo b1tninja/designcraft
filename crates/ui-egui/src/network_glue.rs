@@ -198,7 +198,8 @@ pub(crate) fn query_printer(transport: Option<Transport>, ctx: Option<egui::Cont
     Box::new(move |address: &str| {
         let (tx, rx) = mpsc::channel();
         let (address, transport, ctx, queried) = (address.to_owned(), transport.clone(), ctx.clone(), Arc::clone(&queried));
-        std::thread::spawn(move || {
+        let failed = tx.clone();
+        let spawned = spawn_worker(std::thread::Builder::new().name("network-print-query".into()), move || {
             let result = match Printer::open(&address, transport) {
                 Ok(printer) => printer
                     .info()
@@ -212,6 +213,9 @@ pub(crate) fn query_printer(transport: Option<Transport>, ctx: Option<egui::Cont
             let _ = tx.send(result);
             repaint(&ctx);
         });
+        if let Err(f) = spawned {
+            let _ = failed.send(Err(f));
+        }
         rx
     })
 }
@@ -230,6 +234,18 @@ pub(crate) fn media_for_size(width: f64, height: f64) -> Option<&'static str> {
     ];
     let (short, long) = if width <= height { (width, height) } else { (height, width) };
     SIZES.iter().find(|(w, h, _)| (short - w).abs() <= 3.0 && (long - h).abs() <= 3.0).map(|(_, _, name)| *name)
+}
+
+/// The `MediaSizeName` for a job whose sheets are `sizes`: named only when every sheet is the same
+/// known size (either way up), so spreads or mixed page sizes are not all fitted to the first one's paper.
+pub(crate) fn uniform_media(sizes: &[(f64, f64)]) -> Option<&'static str> {
+    let first = sizes.first().and_then(|&(w, h)| media_for_size(w, h))?;
+    sizes.iter().all(|&(w, h)| media_for_size(w, h) == Some(first)).then_some(first)
+}
+
+/// Run `work` on a thread made by `builder`; a thread that cannot be made is a failure, not a panic.
+fn spawn_worker(builder: std::thread::Builder, work: impl FnOnce() + Send + 'static) -> Result<(), Failure> {
+    builder.spawn(work).map(drop).map_err(|e| Failure::new(FailureKind::Other, e.to_string()))
 }
 
 /// The job and its per-job options for the registry. `Photo` is craft-print's `Quality::Photo`: the
@@ -339,12 +355,16 @@ pub(crate) fn send_job(
         let cancel = CancelToken::new();
         let (address, transport, ctx) = (address.to_owned(), transport.clone(), ctx.clone());
         let (name, pdf, queried, worker_cancel) = (name.clone(), Arc::clone(&pdf), Arc::clone(&queried), cancel.clone());
-        std::thread::spawn(move || {
+        let failed = result_tx.clone();
+        let spawned = spawn_worker(std::thread::Builder::new().name("network-print-job".into()), move || {
             let (job, options) = options(&request, &name);
             let result = run_job(&address, transport, (job, options), &pdf, &queried, confirmed, &worker_cancel, &update_tx, &ctx);
             let _ = result_tx.send(result);
             repaint(&ctx);
         });
+        if let Err(f) = spawned {
+            let _ = failed.send(Err(f));
+        }
         JobHandle::new(result_rx, Box::new(move || cancel.cancel())).with_updates(update_rx)
     })
 }
@@ -507,7 +527,7 @@ impl DesignApp {
                 net::Block::Format => l.no_common_format.to_owned(),
                 net::Block::Unconfirmed => l.confirm.to_owned(),
                 net::Block::Busy => fill(l.sending, &printer),
-                _ => "Nothing to print".to_owned(),
+                _ => crate::i18n::tr(&self.ui.language, "Nothing to print").to_owned(),
             });
         }
         // A grayscale choice is honoured in the document itself, not only as the printer's colour hint.
@@ -519,14 +539,19 @@ impl DesignApp {
         // The attestation comes from the ticked box and nothing else.
         let net = &mut self.net_print;
         let confirmed = UserConfirmed::attest(Some(net.state.draft.confirmed)).map_err(|e| e.to_string())?;
-        let first = designcraft_render::pdf_page_size(&doc.pdf, 0);
-        let media = first.and_then(|(w, h)| media_for_size(w, h));
+        let sizes = designcraft_render::pdf_page_sizes(&doc.pdf).unwrap_or_default();
+        let media = uniform_media(&sizes);
         let send = send_job(net.transport(), self.egui_ctx.clone(), doc.title, Arc::new(doc.pdf), Arc::clone(&net.queried), confirmed);
-        net.state.draft.expected_pages = u32::try_from(doc.pages).ok();
+        // The sheets sent, not the document's pages: a spread is one sheet.
+        net.state.draft.expected_pages = u32::try_from(sizes.len()).ok().filter(|&n| n > 0);
         net.printer = net.state.draft.printer().map(|p| p.name.clone()).unwrap_or_default();
         net.shown = None;
         let address_ok = validate(&net.state.draft.normalized_url()).is_ok();
-        if net.state.start_job(&send, address_ok, true, FORMATS, media) { Ok(()) } else { Err("the print job did not start".into()) }
+        if net.state.start_job(&send, address_ok, true, FORMATS, media) {
+            Ok(())
+        } else {
+            Err(crate::i18n::tr(&self.ui.language, "the print job did not start").to_owned())
+        }
     }
 
     /// Collect finished work (each frame), also while the dialog is closed: the status bar names the
@@ -536,7 +561,11 @@ impl DesignApp {
         let ctx = self.egui_ctx.clone().unwrap_or_default();
         self.net_print.state.poll(&ctx);
         let labels = labels(&self.ui.language);
-        let printer = if self.net_print.printer.is_empty() { "the printer".to_owned() } else { self.net_print.printer.clone() };
+        let printer = if self.net_print.printer.is_empty() {
+            crate::i18n::tr(&self.ui.language, "the printer").to_owned()
+        } else {
+            self.net_print.printer.clone()
+        };
         let line = match &self.net_print.state.draft.job {
             net::JobView::Running { .. } => Some(fill(labels.sending, &printer)),
             net::JobView::Accepted { progress, .. } => {
@@ -546,7 +575,9 @@ impl DesignApp {
             net::JobView::Failed(f) => Some(failed_text(&labels, f)),
             _ => None,
         };
-        let dialog_open = self.ui.dialog.as_ref().is_some_and(|d| d.id == "print");
+        // Any open dialog (the Print dialog, or one the person opened since) is left alone: the
+        // status line tells how the job ended.
+        let dialog_open = self.ui.dialog.is_some();
         if !was_running && !self.net_print.state.draft.running() {
             return;
         }
@@ -556,7 +587,7 @@ impl DesignApp {
                 self.status(line.clone());
             }
             if was_running && !self.net_print.state.draft.running() && !dialog_open {
-                let alert = crate::dialogs::Dialog::new("alert", json!({"title": "Print", "message": line}));
+                let alert = crate::dialogs::Dialog::new("alert", json!({"title": crate::i18n::tr(&self.ui.language, "Print"), "message": line}));
                 self.ui.dialog = Some(alert);
             }
         }

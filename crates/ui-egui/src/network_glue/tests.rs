@@ -92,6 +92,105 @@ fn sheet_sizes_name_the_paper_the_printers_list() {
 }
 
 #[test]
+fn a_media_is_named_only_when_every_sheet_is_one_known_size() {
+    const LETTER: (f64, f64) = (612.0, 792.0);
+    const A4: (f64, f64) = (595.28, 841.89);
+    assert_eq!(uniform_media(&[LETTER, LETTER, (792.0, 612.0)]), Some("na_letter_8.5x11in"), "landscape letter is letter");
+    assert_eq!(uniform_media(&[A4]), Some("iso_a4_210x297mm"));
+    assert_eq!(uniform_media(&[LETTER, A4]), None);
+    assert_eq!(uniform_media(&[A4, LETTER, LETTER]), None);
+    assert_eq!(uniform_media(&[LETTER, (1224.0, 792.0)]), None, "a spread is not the page's paper");
+    assert_eq!(uniform_media(&[]), None);
+}
+
+/// The paper a job names comes from every sheet, not from the first one alone.
+#[test]
+fn a_mixed_size_document_names_no_paper_and_a_uniform_one_does() {
+    let ticket = |app: &mut DesignApp, printer: &FakePrinter, n: u32| {
+        app.net_print.state.draft.confirmed = true;
+        app.network_send(&json!({})).unwrap();
+        wait(app, |a| matches!(draft(a).job, JobView::Finished(_)));
+        printer.job(n).unwrap().ticket
+    };
+    let (mut app, printer) = app(Config::default());
+    app.run("file.new", json!({"pages": 2, "preset": "A4"})).unwrap();
+    query(&mut app);
+    assert!(ticket(&mut app, &printer, 1).contains("iso_a4_210x297mm"), "every sheet is A4");
+    app.run("layout.pageSize", json!({"pages": [2], "preset": "Letter"})).unwrap();
+    let mixed = ticket(&mut app, &printer, 2);
+    assert!(!mixed.contains("iso_a4_210x297mm") && !mixed.contains("na_letter"), "A4 and Letter name no paper: {mixed}");
+}
+
+/// A spreads print expects as many sheets as the PDF has, not the document's page count.
+#[test]
+fn a_spreads_job_expects_the_sheets_it_sends() {
+    let (mut app, printer) = app(Config::default());
+    app.run("file.new", json!({"pages": 4, "facingPages": true})).unwrap();
+    query(&mut app);
+    app.net_print.state.draft.confirmed = true;
+    app.network_send(&json!({"spreads": true})).unwrap();
+    let expected = draft(&app).expected_pages;
+    wait(&mut app, |a| matches!(draft(a).job, JobView::Finished(_)));
+    let sheets = designcraft_render::pdf_page_count(&printer.job(1).unwrap().document.unwrap()).unwrap();
+    assert!(sheets < 4);
+    assert_eq!(expected, u32::try_from(sheets).ok());
+}
+
+/// A job that ends while another dialog is open (Export PDF here) leaves that dialog alone and says
+/// how it ended on the status line.
+#[test]
+fn a_job_that_ends_under_another_dialog_does_not_replace_it() {
+    let (mut app, _) = app(Config::default());
+    query(&mut app);
+    app.net_print.state.draft.confirmed = true;
+    app.network_send(&json!({})).unwrap();
+    app.ui.dialog = Some(crate::dialogs::Dialog::new("pdfExport", json!({"preset": "Custom"})));
+    wait(&mut app, |a| matches!(draft(a).job, JobView::Finished(_)));
+    let dialog = app.ui.dialog.as_ref().expect("a dialog is open");
+    assert_eq!((dialog.id.as_str(), dialog.s("preset").as_str()), ("pdfExport", "Custom"), "the dialog is the person's, untouched");
+    let JobView::Finished(report) = &draft(&app).job else { panic!("finished") };
+    assert!(app.ui.status.contains(&app.finished_text(&labels("en"), report)), "the status line tells it: {}", app.ui.status);
+}
+
+/// An address changed while its query runs: the old answer ends the query, so the Query button and
+/// printing are not blocked until the dialog is reopened.
+#[test]
+fn changing_the_address_mid_query_does_not_leave_it_running() {
+    let (mut app, _) = app(Config::default());
+    let worker = query_printer(app.net_print.transport(), None, Arc::clone(&app.net_print.queried));
+    assert!(app.net_print.state.start_query(&worker, true));
+    app.net_print.use_address("127.0.0.1:5358/other");
+    wait(&mut app, |a| !draft(a).querying());
+    assert!(draft(&app).printer().is_none(), "nothing was learned for the address now typed");
+}
+
+/// A worker thread that cannot be started is reported, not a panic.
+#[test]
+fn a_worker_that_cannot_start_is_a_failure() {
+    let impossible = std::thread::Builder::new().stack_size(1 << 50);
+    let failure = spawn_worker(impossible, || {}).unwrap_err();
+    assert_eq!(failure.kind, FailureKind::Other);
+    assert!(spawn_worker(std::thread::Builder::new(), || {}).is_ok());
+}
+
+/// The words the app adds around the network job follow the interface language.
+#[test]
+fn the_apps_own_print_words_are_translated() {
+    let (mut app, _) = app(Config::default());
+    app.ui.language = "de".into();
+    query(&mut app);
+    app.net_print.state.draft.confirmed = true;
+    app.network_send(&json!({})).unwrap();
+    app.ui.dialog = None;
+    wait(&mut app, |a| matches!(draft(a).job, JobView::Finished(_)));
+    let alert = app.ui.dialog.as_ref().expect("the alert");
+    assert_eq!(alert.s("title"), "Drucken");
+    for english in ["Nothing to print", "the print job did not start", "the printer"] {
+        assert_ne!(crate::i18n::tr("de", english), english, "{english}");
+    }
+}
+
+#[test]
 fn settings_become_job_options() {
     let request = Request {
         copies: Some(3),
