@@ -186,7 +186,7 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
 ## How far from full parity (estimate, 2026-10-04)
 
 **Breadth: ~99% weighted** (P0 core 99%, P1 100%, P2 97%) over the 275 features of the InDesign catalogue, scored
-row by row in [docs/parity.md](docs/parity.md) (`cargo xtask parity` recomputes it). Many features scored done still
+row by row in [docs/parity-checklist.md](docs/parity-checklist.md) (`cargo xtask parity` recomputes it). Many features scored done still
 lack some of InDesign's options or dialog details, so **overall parity including depth is about 83%**.
 
 **Remaining work: about 170 wall-clock hours of a single Claude Opus 5.5 agent** (±30%), or roughly 60–85 hours with
@@ -349,6 +349,13 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 Newest first.
 
 - **2026-10-18** · Network printer: a job names a paper only when every sheet is one known size (spreads and mixed page sizes were fitted to page 1's paper), counts the PDF's sheets for its progress, no longer replaces an open dialog when it ends, and shows why it could not start in the Print dialog; changing the address while the printer is being asked no longer leaves Query disabled. No readiness percentage change.
+- **2026-10-16** · Type › Reload Fonts (`font.reload`): fonts installed, edited or removed while DesignCraft runs are read again without a restart, and the open documents recompose with them (#328, #547). An edited font file is noticed by its length and modification time; bundled, added and document fonts stay as they are. InDesign does this by itself, so noticing changes automatically is still open (gap 6). No readiness percentage change.
+- **2026-10-16** · Parents can be deleted from their Pages-panel context menu or `layout.parents.delete {id}`. Applied-page and based-on references are cleared, local override copies survive, and Undo restores the parent. Addresses the deletion portion of #956; no readiness percentage change.
+- **2026-10-17** · File › Package writes the document's and the IDML's links relative to the package (`Links/logo.png`, `file:Links/logo.png`), so a package holds no path from the machine that made it; opening a document resolves them to the files beside it. Links › Copy Link(s) To still links by full path. (#340). No readiness percentage change.
+- **2026-10-18** · View › Screen Mode: Bleed and Slug do what they say. Both were selectable from the toolbar, the View menu and `view.screenMode` but drew the canvas exactly as Normal did, guides and all; they are preview modes now, and what each page shows reaches the bleed box or the slug box instead of stopping at the trim. The slug guide is drawn as well, in the Slug colour from Preferences › Guides & Pasteboard, which nothing had read. No readiness percentage change.
+- **2026-10-17** · Object strokes reject malformed types and unknown type fields before changing the document; command help lists every stroke kind and its required fields. No readiness percentage change.
+- **2026-10-17** · Docs: documented a persistent source CLI install with Cargo, MCP-client PATH setup and bare-name server registration in `docs/mcp.md`. No readiness percentage change.
+
 - **2026-10-16** · Threading: the loaded text cursor threads into a text frame inside a group (it hit the group and showed it could not thread); a plain click still selects the group (#1075). Gap 27 closed. No readiness percentage change.
 - **2026-10-16** · Greek text hyphenates. The patterns were never compiled in, so Greek set unhyphenated however narrow the column; `"Greek"`, `"Greek: Greece"`, `el` and `el-GR` all resolve now and ανθρωπος breaks αν-θρω-πος. They are the monotonic patterns (hyph-el-monoton, Dimitrios Filippou, under MIT), which is what polytonic text hyphenates by too. Five of InDesign's ~40 hyphenation languages. No readiness percentage change.
 - **2026-10-16** · A swatch applied to a placed greyscale or bitmap image colours it, as in InDesign: IDML's `<Image FillColor>` is read and written, greyscale pixels become a tint of the swatch on opaque white and a bitmap's white lets the frame show through, on screen and in PDF (spot swatches print on their plate). Colour images keep their colours. Applying the swatch from the Swatches panel comes next. No readiness percentage change.
@@ -633,3 +640,5 @@ Newest first.
 The shared craft-installer UI preserves this revision's install options and provides persistent installation, repair and Windows Settings removal completion screens. Silent modes stay unattended. Earlier Windows acceptance is recorded in packaging/windows/README.md; normal CI and production-profile upgrade qualification against pinned current releases are in progress. No release or PR has been published.
 
 - **2026-10-15** · Windows recovery folders validate the identity of the live locked file without reading it through a second handle. Missing or replaced locks disable writes and cleanup; regression tests cover retained exclusive locking and replacement-file protection. No readiness percentage change.
+
+- PDF reader infrastructure: pinned shared parsing/rasterization, transformed page-box geometry and explicit failures for known incomplete layered-PDF exports. Application ownership and parity targets are unchanged.
