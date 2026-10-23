@@ -307,3 +307,24 @@ fn queried_printers_are_remembered_by_their_reported_name_for_the_session() {
     app.net_print.use_address("127.0.0.1:5358/other");
     assert!(draft(&app).printer().is_none(), "another address is another printer");
 }
+
+/// The dialog stays open while a network job runs: the refusal of an earlier OK (the confirmation
+/// not yet ticked) must be gone once the job has started, not shown beside it in the error colour.
+#[test]
+fn a_started_job_clears_the_earlier_refusal_from_the_open_print_dialog() {
+    let (mut app, printer) = app(Config::default());
+    query(&mut app);
+    let mut dialog = crate::dialogs::Dialog::new("print", json!({}));
+    dialog.fields.insert("destination".into(), json!("network"));
+    dialog.fields.insert("range".into(), json!("all"));
+    app.ui.dialog = Some(dialog);
+    assert_eq!(crate::dialogs::confirm(&mut app).unwrap_err(), labels("").confirm);
+    let shown = app.ui.dialog.as_ref().unwrap();
+    assert_eq!(shown.fields.get("status").and_then(Value::as_str), Some(labels("").confirm), "the refusal is in the dialog");
+    app.net_print.state.draft.confirmed = true;
+    crate::dialogs::confirm(&mut app).unwrap();
+    let shown = app.ui.dialog.as_ref().expect("the dialog stays open while the job runs");
+    assert!(!shown.fields.contains_key("status"), "no stale error beside a running job");
+    wait(&mut app, |a| matches!(draft(a).job, JobView::Finished(_)));
+    assert_eq!(printer.jobs(), 1);
+}

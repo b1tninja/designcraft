@@ -3401,10 +3401,17 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             let pages = if d.s("range") == "all" { Value::Null } else { json!(d.s("pages")) };
             let r = app.network_send(&json!({"pages": pages, "spreads": d.b("spreads"), "marks": d.b("marks"), "bleed": d.b("bleed")}));
             let mut d = d;
-            if let Err(e) = &r {
-                // In the dialog, as the system queue's failure is, and on the status bar.
-                d.fields.insert("status".into(), json!(e));
-                app.status(e.clone());
+            match &r {
+                Err(e) => {
+                    // In the dialog, as the system queue's failure is, and on the status bar.
+                    d.fields.insert("status".into(), json!(e));
+                    app.status(e.clone());
+                }
+                // The dialog stays up while the job runs: an earlier refusal (the confirmation not yet
+                // ticked) must not keep showing in the error colour beside a job that has started.
+                Ok(()) => {
+                    d.fields.remove("status");
+                }
             }
             app.ui.dialog = Some(d);
             r.map(|()| json!({"network": true}))
