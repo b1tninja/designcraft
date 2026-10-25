@@ -317,29 +317,37 @@ pub struct GrayPage {
 
 /// A PDF whose every page is one gray picture: what a "Grayscale" print sends, whatever the colours
 /// of the document. (Gray samples are stored as equal R=G=B so every viewer shows exactly gray.)
-pub fn gray_pdf(pages: &[GrayPage], title: Option<&str>) -> Result<Vec<u8>> {
+///
+/// The pages are pulled one at a time, in order, and each one's raster is released before the next is
+/// asked for, so a long document never holds every page's pixels at once. The first `Err` an iterator
+/// yields ends the build and is returned.
+pub fn gray_pdf(pages: impl IntoIterator<Item = Result<GrayPage>>, title: Option<&str>) -> Result<Vec<u8>> {
     write::guard(|| gray_pdf_inner(pages, title))
 }
 
-fn gray_pdf_inner(pages: &[GrayPage], title: Option<&str>) -> Result<Vec<u8>> {
+fn gray_pdf_inner(pages: impl IntoIterator<Item = Result<GrayPage>>, title: Option<&str>) -> Result<Vec<u8>> {
     let metadata = Metadata { creator: "DesignCraft".into(), producer: "DesignCraft".into(), title: title.map(str::to_owned), ..Default::default() };
     let mut writer = Writer::new(krilla::SerializeSettings::default(), metadata);
     let pdf = writer.document_mut();
-    if pages.is_empty() {
-        return Err(PdfError::NoPages);
-    }
+    let mut count = 0usize;
     for pg in pages {
+        let pg = pg?;
+        count += 1;
         let (w, h) = pg.size;
         if w == 0 || h == 0 || pg.pixels.len() != w as usize * h as usize {
             return Err(PdfError::Write("a gray page's pixels do not match its size".into()));
         }
         let size = Size::from_wh(pg.points.0.max(1.0), pg.points.1.max(1.0)).ok_or(PdfError::NoPages)?;
         let rgba: Vec<u8> = pg.pixels.iter().flat_map(|&v| [v, v, v, 255]).collect();
+        drop(pg);
         let mut page = pdf.start_page_with(PageSettings::new(size));
         let mut s = page.surface();
         s.draw_image(Image::from_rgba8(rgba, w, h), size);
         s.finish();
         page.finish();
+    }
+    if count == 0 {
+        return Err(PdfError::NoPages);
     }
     writer.finish().map_err(PdfError::from)
 }
@@ -1825,6 +1833,32 @@ fn recompress(data: &[u8], mode: RasterMode) -> Option<Image> {
 mod image_content_cache_tests {
     use super::*;
     use designcraft_doc::Asset;
+    use std::cell::Cell;
+
+    fn gray(v: u8) -> GrayPage {
+        GrayPage { points: (10.0, 10.0), size: (2, 2), pixels: vec![v; 4] }
+    }
+
+    #[test]
+    fn gray_pdf_pulls_pages_lazily_in_order() {
+        let pulled = Cell::new(0);
+        let pages = (0..3u8).map(|i| {
+            pulled.set(pulled.get() + 1);
+            Ok(gray(i * 100))
+        });
+        let bytes = gray_pdf(pages, Some("Gray title")).unwrap();
+        assert_eq!(pulled.get(), 3);
+        assert_eq!(hayro_syntax::Pdf::new(Arc::new(bytes)).unwrap().pages().len(), 3);
+        // An error on the second page stops the build: the third is never rendered.
+        let pulled = Cell::new(0);
+        let pages = (0..3u8).map(|i| {
+            pulled.set(pulled.get() + 1);
+            if i == 1 { Err(PdfError::Write("page 2 could not be rendered".into())) } else { Ok(gray(i)) }
+        });
+        assert_eq!(gray_pdf(pages, None), Err(PdfError::Write("page 2 could not be rendered".into())));
+        assert_eq!(pulled.get(), 2);
+        assert_eq!(gray_pdf(std::iter::empty(), None), Err(PdfError::NoPages));
+    }
 
     fn png(w: u32, h: u32, color: [u8; 4]) -> Vec<u8> {
         let image = image::RgbaImage::from_pixel(w, h, image::Rgba(color));

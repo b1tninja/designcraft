@@ -93,24 +93,34 @@ const GRAY_DPI: f64 = 300.0;
 pub fn grayscale_pdf(pdf: &[u8], title: Option<&str>) -> Result<Vec<u8>> {
     let count =
         designcraft_render::pdf_page_count(pdf).filter(|n| *n > 0).ok_or_else(|| EngineError::Other("no pages to convert to grayscale".into()))?;
-    let mut pages = Vec::with_capacity(count);
-    for i in 0..count {
-        let (w, h) = designcraft_render::pdf_page_size(pdf, i).ok_or_else(|| EngineError::Other(format!("page {} could not be read", i + 1)))?;
-        let side = (w.max(h) * GRAY_DPI / 72.0).round().clamp(1.0, 8000.0) as u32;
-        let pm =
-            designcraft_render::render_pdf_page(pdf, i, side).ok_or_else(|| EngineError::Other(format!("page {} could not be rendered", i + 1)))?;
-        let pixels: Vec<u8> = pm
-            .data()
-            .iter()
-            .map(|p| {
-                // Premultiplied RGBA over white.
-                let over = |c: u8| (u16::from(c) + (255 - u16::from(p.a))).min(255) as u8;
-                designcraft_pdf::rec709_luma(over(p.r), over(p.g), over(p.b))
-            })
-            .collect();
-        pages.push(designcraft_pdf::GrayPage { points: (w as f32, h as f32), size: (u32::from(pm.width()), u32::from(pm.height())), pixels });
-    }
-    designcraft_pdf::gray_pdf(&pages, title).map_err(|e| EngineError::Other(e.to_string()))
+    // Pages are rendered as `gray_pdf` pulls them, so only one raster is alive at a time (a Letter
+    // page at 300 dpi is ~8.4 MB). A page that fails is kept here, so its own message is the error.
+    let mut failure = None;
+    let pages = (0..count).map(|i| {
+        gray_page(pdf, i).map_err(|e| {
+            failure = Some(e);
+            designcraft_pdf::PdfError::Write(String::new())
+        })
+    });
+    designcraft_pdf::gray_pdf(pages, title).map_err(|e| failure.take().unwrap_or_else(|| EngineError::Other(e.to_string())))
+}
+
+/// Page `i` of `pdf` rendered over white and reduced to Rec. 709 gray.
+#[cfg(not(target_arch = "wasm32"))]
+fn gray_page(pdf: &[u8], i: usize) -> Result<designcraft_pdf::GrayPage> {
+    let (w, h) = designcraft_render::pdf_page_size(pdf, i).ok_or_else(|| EngineError::Other(format!("page {} could not be read", i + 1)))?;
+    let side = (w.max(h) * GRAY_DPI / 72.0).round().clamp(1.0, 8000.0) as u32;
+    let pm = designcraft_render::render_pdf_page(pdf, i, side).ok_or_else(|| EngineError::Other(format!("page {} could not be rendered", i + 1)))?;
+    let pixels: Vec<u8> = pm
+        .data()
+        .iter()
+        .map(|p| {
+            // Premultiplied RGBA over white.
+            let over = |c: u8| (u16::from(c) + (255 - u16::from(p.a))).min(255) as u8;
+            designcraft_pdf::rec709_luma(over(p.r), over(p.g), over(p.b))
+        })
+        .collect();
+    Ok(designcraft_pdf::GrayPage { points: (w as f32, h as f32), size: (u32::from(pm.width()), u32::from(pm.height())), pixels })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
