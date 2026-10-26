@@ -17,7 +17,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Print…",
             ["File"],
             Some("Cmd+P"),
-            "{printer?, copies?: 1, pages?: \"1-3,5\", spreads?, marks?, bleed?, grayscale?: bool (send gray pages: every page rendered to Rec. 709 gray, and the driver told), dryRun?: bool (export and preview submission without printing)} → {printer, copies, pages, command, bytes}",
+            "{printer?, copies?: 1, pages?: \"1-3,5\", spreads?, marks?, bleed?, grayscale?: bool (send gray pages: every page rendered to Rec. 709 gray, and the driver told), dryRun?: bool (export and preview submission without printing), created?: int (Unix seconds, as file.exportPdf)} → {printer, copies, pages, command, bytes}",
             has_doc,
             print
         ),
@@ -173,8 +173,18 @@ mod tests {
             assert!(command.contains(&"print-scaling=auto-fit"));
             assert!(!command.iter().any(|a| a.starts_with("sides=")));
         } else {
-            // Windows: older craft-print previewed a PowerShell command; the in-process XPS path names itself.
-            assert!(matches!(command[0], "powershell" | "xps-print"), "{command:?}");
+            assert_eq!(
+                command,
+                [
+                    "xps-print",
+                    "printer=Office",
+                    "copies=2",
+                    "collate=true",
+                    "duplex=(queue default)",
+                    "scaling=shrink-to-fit",
+                    "color=(driver default)"
+                ]
+            );
         }
         assert!(r["bytes"].as_u64().unwrap() > 500);
         assert!(s.execute("file.print", &json!({"pages": "9", "dryRun": true})).is_err());
@@ -185,7 +195,8 @@ mod tests {
     fn print_submits_the_selected_export_and_reports_refusal() {
         let mut s = Session::new();
         s.execute("file.new", &json!({"pages": 4})).unwrap();
-        let params = json!({"printer": "Office (east)", "copies": 2, "pages": "2-3", "marks": true, "bleed": true});
+        // A fixed creation date: both exports would otherwise take the clock's second.
+        let params = json!({"printer": "Office (east)", "copies": 2, "pages": "2-3", "marks": true, "bleed": true, "created": 1_700_000_000});
         let expected = {
             let d = &s.doc().unwrap().doc;
             let options = print_options(&params, d.page_count()).unwrap();
@@ -208,6 +219,7 @@ mod tests {
         assert!(refusal.to_string().contains("printer offline"));
         print_with(&mut s, &json!({"dryRun": true}), |_, _| panic!("dry runs must not spool")).unwrap();
         assert!(print_with(&mut s, &json!({"pages": "9"}), |_, _| panic!("invalid ranges must not spool")).is_err());
+        assert!(print_with(&mut s, &json!({"created": "today"}), |_, _| panic!("an invalid date must not spool")).is_err());
     }
 
     /// C: a slide-sized document (16:9, 13.33 x 7.50 in) is printed on the queue's own default paper,

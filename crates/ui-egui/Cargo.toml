@@ -10,7 +10,8 @@ description = "DesignCraft egui frontend (InDesign-style UI); swappable — noth
 workspace = true
 
 [dependencies]
-craft-ui = { workspace = true }
+craft-ui = { workspace = true, features = ["native-windows"] }
+craft-window = { workspace = true }
 designcraft-geom = { workspace = true }
 designcraft-color = { workspace = true }
 designcraft-doc = { workspace = true }
@@ -19,10 +20,12 @@ designcraft-compose = { workspace = true }
 designcraft-render = { workspace = true }
 designcraft-tools = { workspace = true }
 designcraft-engine = { workspace = true }
+# The UI draws monochrome icon glyphs from egui's bundled emoji faces (☰, ⚠, 📋); 0.37 moved
+# them behind this feature. They stay bundled copies of OSI/CC0 faces from `epaint_default_fonts`.
+egui = { workspace = true, features = ["monochrome_emoji_fonts"] }
+web-time = { workspace = true }
+# Unicode bidi classes are used only to bypass the label cache for ordinary LTR text.
 unicode-bidi = { workspace = true }
-unicode-bidi-mirroring = { workspace = true }
-unicode-segmentation = { workspace = true }
-egui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
@@ -30,10 +33,14 @@ log = { workspace = true }
 # Network printing (WS-Print, IPP): not for the web, there is no socket there.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 designcraft-print = { workspace = true }
+craft-update = { workspace = true }
 
 [dev-dependencies]
 # The in-memory fake printers (never in a shipped binary).
 craft-print = { workspace = true, features = ["testing"] }
+# egui 0.37 no longer enables `default_fonts` for library consumers; egui_kittest disables
+# egui's defaults, and package-scoped UI tests do not build the app binary.
+egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }
 tempfile = { workspace = true }
 designcraft-idml = { workspace = true }
 zip = { workspace = true }

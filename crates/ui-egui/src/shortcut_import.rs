@@ -354,80 +354,87 @@ fn keys_of(sc: &str) -> Option<(bool, bool, bool, bool, egui::Key)> {
     menus::parse_shortcut(sc).map(|(m, k)| (m.command, m.alt, m.shift, m.ctrl, k))
 }
 
-/// Imports a set: every matched command takes the set's shortcut (or none), another command
-/// holding an imported shortcut loses it, and the rest keep theirs. Returns the report.
-pub fn import(app: &mut DesignApp, text: &str) -> Result<Value, String> {
-    if text.len() > MAX_BYTES {
-        return Err(format!("the set is larger than {} MB", MAX_BYTES >> 20));
-    }
-    let set = parse(text)?;
-    let mac = is_mac_set(&set);
-    let ix = Index::build();
-    let mut decisions: Vec<Decision> = Vec::new();
-    let mut unmatched = Vec::new();
-    let mut unmatched_without_shortcut = 0usize;
-    let mut unreadable = Vec::new();
-    for item in &set.items {
-        let shown = if item.area.is_empty() { item.name.clone() } else { format!("{} › {}", item.area, item.name) };
-        let all_keys = item.entries.iter().map(|e| format!("{}: {}", e.context, e.keys)).collect::<Vec<_>>().join(", ");
-        let Some(id) = ix.find(&item.area, &item.name) else {
-            if item.entries.is_empty() {
-                unmatched_without_shortcut += 1;
-            } else {
-                let tool = norm(&item.area) == "tools"
-                    && designcraft_tools::TOOL_GROUPS.iter().flat_map(|g| g.iter()).any(|t| norm(t.label) == norm(&item.name));
-                let mut row = json!({"item": shown, "keys": all_keys});
-                if tool {
-                    row["reason"] = json!("tool keys are fixed");
-                }
-                unmatched.push(row);
-            }
-            continue;
-        };
-        let in_context = |ctx: &'static str| item.entries.iter().filter(move |e| e.context.eq_ignore_ascii_case(ctx)).collect::<Vec<&Entry>>();
-        let text_command = id.starts_with("type.") || id.starts_with("text.");
-        let mut considered = in_context("Default");
-        if considered.is_empty() && text_command {
-            considered = in_context("Text");
-        }
-        let mut read = None;
-        let mut why = "";
-        for e in &considered {
-            match read_keys(&e.keys, mac) {
-                Ok(sc) => {
-                    read = Some(sc);
-                    break;
-                }
-                Err(w) => why = w,
-            }
-        }
-        if read.is_none() && !considered.is_empty() {
-            unreadable.push(json!({"item": shown, "keys": all_keys, "reason": why}));
-        }
-        let pos = match decisions.iter().position(|d| d.id == id) {
-            Some(p) => p,
-            None => {
-                decisions.push(Decision { id: id.clone(), item: shown.clone(), shortcut: None, all_none: true });
-                decisions.len() - 1
-            }
-        };
-        let Some(d) = decisions.get_mut(pos) else { continue };
-        d.all_none &= item.entries.is_empty();
-        if d.shortcut.is_none()
-            && let Some(sc) = read
-        {
-            d.shortcut = Some(sc);
-            d.item = shown;
-        }
-    }
+/// What the first pass makes of a set's items, before any shortcut changes.
+#[derive(Default)]
+struct Sorted {
+    decisions: Vec<Decision>,
+    unmatched: Vec<Value>,
+    unmatched_without_shortcut: usize,
+    unreadable: Vec<Value>,
+}
 
-    let before: HashMap<String, Option<String>> = menus::effective_shortcuts(app).into_iter().map(|(id, sc)| (id, Some(sc))).collect();
-    let mut imported = 0usize;
-    let mut taken: Vec<((bool, bool, bool, bool, egui::Key), String)> = Vec::new();
-    let mut skipped = Vec::new();
-    let mut decided: BTreeSet<String> = BTreeSet::new();
-    // When two items in the set want the same keys, the later one takes them (the rule shared by
-    // the Craft apps' importers).
+/// The first readable shortcut among `entries`, and the reason for the last unreadable one before it.
+fn first_readable(entries: &[&Entry], mac: bool) -> (Option<String>, &'static str) {
+    let mut why = "";
+    for e in entries {
+        match read_keys(&e.keys, mac) {
+            Ok(sc) => return (Some(sc), why),
+            Err(w) => why = w,
+        }
+    }
+    (None, why)
+}
+
+/// Sorts one item of a set: matched to a command (its first readable shortcut becomes that
+/// command's decision), unmatched, or matched with keys that cannot be read.
+fn sort_item(sorted: &mut Sorted, ix: &Index, item: &SetItem, mac: bool) {
+    let shown = if item.area.is_empty() { item.name.clone() } else { format!("{} › {}", item.area, item.name) };
+    let all_keys = item.entries.iter().map(|e| format!("{}: {}", e.context, e.keys)).collect::<Vec<_>>().join(", ");
+    let Some(id) = ix.find(&item.area, &item.name) else {
+        if item.entries.is_empty() {
+            sorted.unmatched_without_shortcut += 1;
+        } else {
+            let tool = norm(&item.area) == "tools"
+                && designcraft_tools::TOOL_GROUPS.iter().flat_map(|g| g.iter()).any(|t| norm(t.label) == norm(&item.name));
+            let mut row = json!({"item": shown, "keys": all_keys});
+            if tool {
+                row["reason"] = json!("tool keys are fixed");
+            }
+            sorted.unmatched.push(row);
+        }
+        return;
+    };
+    let in_context = |ctx: &'static str| item.entries.iter().filter(move |e| e.context.eq_ignore_ascii_case(ctx)).collect::<Vec<&Entry>>();
+    let text_command = id.starts_with("type.") || id.starts_with("text.");
+    let mut considered = in_context("Default");
+    if considered.is_empty() && text_command {
+        considered = in_context("Text");
+    }
+    let (read, why) = first_readable(&considered, mac);
+    if read.is_none() && !considered.is_empty() {
+        sorted.unreadable.push(json!({"item": shown, "keys": all_keys, "reason": why}));
+    }
+    let pos = match sorted.decisions.iter().position(|d| d.id == id) {
+        Some(p) => p,
+        None => {
+            sorted.decisions.push(Decision { id: id.clone(), item: shown.clone(), shortcut: None, all_none: true });
+            sorted.decisions.len() - 1
+        }
+    };
+    let Some(d) = sorted.decisions.get_mut(pos) else { return };
+    d.all_none &= item.entries.is_empty();
+    if d.shortcut.is_none()
+        && let Some(sc) = read
+    {
+        d.shortcut = Some(sc);
+        d.item = shown;
+    }
+}
+
+/// What applying a set's decisions did.
+struct Applied {
+    imported: usize,
+    /// The keys each command took, with that command.
+    taken: Vec<((bool, bool, bool, bool, egui::Key), String)>,
+    skipped: Vec<Value>,
+    /// The commands the set decided, whether or not it changed them.
+    decided: BTreeSet<String>,
+}
+
+/// Sets or clears each decided command's shortcut. When two items want the same keys, the later
+/// one takes them (the rule shared by the Craft apps' importers).
+fn apply_decisions(app: &mut DesignApp, decisions: &[Decision]) -> Applied {
+    let mut applied = Applied { imported: 0, taken: Vec::new(), skipped: Vec::new(), decided: BTreeSet::new() };
     let mut winner: HashMap<(bool, bool, bool, bool, egui::Key), usize> = HashMap::new();
     for (i, d) in decisions.iter().enumerate() {
         if let Some(keys) = d.shortcut.as_deref().and_then(keys_of) {
@@ -439,10 +446,10 @@ pub fn import(app: &mut DesignApp, text: &str) -> Result<Value, String> {
             Some(sc) => {
                 let Some(keys) = keys_of(sc) else { continue };
                 if let Some(w) = winner.get(&keys).filter(|&&w| w != i).and_then(|&w| decisions.get(w)) {
-                    skipped.push(json!({"id": d.id, "item": d.item, "shortcut": sc, "takenBy": w.id}));
+                    applied.skipped.push(json!({"id": d.id, "item": d.item, "shortcut": sc, "takenBy": w.id}));
                     continue;
                 }
-                taken.push((keys, d.id.clone()));
+                applied.taken.push((keys, d.id.clone()));
                 if menus::default_shortcut(&d.id).and_then(keys_of) == Some(keys) {
                     app.ui.shortcuts.remove(&d.id);
                 } else {
@@ -458,12 +465,18 @@ pub fn import(app: &mut DesignApp, text: &str) -> Result<Value, String> {
             }
             None => continue,
         }
-        imported += 1;
-        decided.insert(d.id.clone());
+        applied.imported += 1;
+        applied.decided.insert(d.id.clone());
     }
+    applied
+}
+
+/// Clears the shortcut of each command outside the set that still holds keys the set took.
+/// Returns the report of the commands cleared.
+fn clear_conflicts(app: &mut DesignApp, applied: &Applied) -> Vec<Value> {
     let mut conflicts = Vec::new();
     for (id, sc) in menus::effective_shortcuts(app) {
-        if decided.contains(&id) {
+        if applied.decided.contains(&id) {
             continue;
         }
         // A command sharing its default keys with the one taking them (file.new and the New
@@ -473,15 +486,35 @@ pub fn import(app: &mut DesignApp, text: &str) -> Result<Value, String> {
             default(&id).is_some() && default(&id) == default(by)
         };
         if let Some(keys) = keys_of(&sc)
-            && taken.iter().any(|(k, by)| *k == keys && !twin(by))
+            && applied.taken.iter().any(|(k, by)| *k == keys && !twin(by))
         {
             app.ui.shortcuts.insert(id.clone(), String::new());
             conflicts.push(json!({"id": id, "label": command_label(&id), "shortcut": sc}));
         }
     }
+    conflicts
+}
+
+/// Imports a set: every matched command takes the set's shortcut (or none), another command
+/// holding an imported shortcut loses it, and the rest keep theirs. Returns the report.
+pub fn import(app: &mut DesignApp, text: &str) -> Result<Value, String> {
+    if text.len() > MAX_BYTES {
+        return Err(format!("the set is larger than {} MB", MAX_BYTES >> 20));
+    }
+    let set = parse(text)?;
+    let mac = is_mac_set(&set);
+    let ix = Index::build();
+    let mut sorted = Sorted::default();
+    for item in &set.items {
+        sort_item(&mut sorted, &ix, item, mac);
+    }
+    let Sorted { decisions, unmatched, unmatched_without_shortcut, unreadable } = sorted;
+    let before: HashMap<String, Option<String>> = menus::effective_shortcuts(app).into_iter().map(|(id, sc)| (id, Some(sc))).collect();
+    let applied = apply_decisions(app, &decisions);
+    let conflicts = clear_conflicts(app, &applied);
     let changed: Vec<Value> = decisions
         .iter()
-        .filter(|d| decided.contains(&d.id))
+        .filter(|d| applied.decided.contains(&d.id))
         .filter_map(|d| {
             let from = before.get(&d.id).cloned().flatten();
             let to = menus::shortcut_of(app, &d.id);
@@ -490,10 +523,10 @@ pub fn import(app: &mut DesignApp, text: &str) -> Result<Value, String> {
         .collect();
     Ok(json!({
         "set": set.name,
-        "imported": imported,
+        "imported": applied.imported,
         "changed": changed,
         "conflictsCleared": conflicts,
-        "skipped": skipped,
+        "skipped": applied.skipped,
         "unmatched": unmatched,
         "unmatchedWithoutShortcut": unmatched_without_shortcut,
         "unreadable": unreadable,

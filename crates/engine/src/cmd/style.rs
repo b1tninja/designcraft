@@ -249,7 +249,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Export Tagging",
             [],
             None,
-            "{style, character?: bool, tag?: p|h1…h6|blockquote|pre|li|… (span|em|strong|code|sup|sub… for characters; \"\" = automatic), class?} → the tagging",
+            "{style, character?: bool, tag?: p|h1…h6|blockquote|pre|li|… (span|em|strong|code|sup|sub… for characters; \"\" = automatic), class?, split?: bool (paragraphs: Split Document, EPUB only)} → the tagging",
             has_doc,
             |s, p| {
                 let name = str_param(p, "style").ok_or_else(|| bad("style.exportTag", "`style` required"))?.to_string();
@@ -258,8 +258,12 @@ pub fn specs() -> Vec<CommandSpec> {
                 if !exists {
                     return Err(bad("style.exportTag", format!("no style `{name}`")));
                 }
-                let key = format!("{}:{name}", if character { "c" } else { "p" });
+                let key = export_tag_key(!character, &name);
                 let (tag, class) = (str_param(p, "tag").map(str::to_string), str_param(p, "class").map(str::to_string));
+                let split = p.get("split").and_then(Value::as_bool);
+                if character && split == Some(true) {
+                    return Err(bad("style.exportTag", "`split` is for paragraph styles"));
+                }
                 s.edit(|d, _| {
                     let st = d.styles_mut();
                     let e = st.export_tags.entry(key.clone()).or_default();
@@ -269,8 +273,11 @@ pub fn specs() -> Vec<CommandSpec> {
                     if let Some(c) = class.clone() {
                         e.class = c;
                     }
+                    if let Some(v) = split {
+                        e.split = v;
+                    }
                     let out = serde_json::to_value(&*e).unwrap_or_default();
-                    if e.tag.is_empty() && e.class.is_empty() {
+                    if *e == designcraft_doc::ExportTag::default() {
                         st.export_tags.remove(&key);
                     }
                     Ok(out)
@@ -302,7 +309,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New Paragraph Style…",
             [],
             None,
-            "{name, basedOn?, nextStyle?, para?: {paragraph attributes, as type.para names them: align, leftIndent, firstLineIndent, spaceBefore, spaceAfter, …; startAt?: null = continue numbering; grepStyles?: [{style, pattern}]: a pattern that can't compile is an error}, chars?: {character attributes, as type.char names them: fontFamily, fontStyle, size, leading, tracking, fill, …}, fromSelection?: bool}",
+            "{name, basedOn?, nextStyle?, para?: {paragraph attributes, as type.para names them: align, leftIndent, firstLineIndent, spaceBefore, spaceAfter, ignoreOpticalMargin, …; startAt?: null = continue numbering; grepStyles?: [{style, pattern}]: a pattern that can't compile is an error}, chars?: {character attributes, as type.char names them: fontFamily, fontStyle, size, leading, tracking, fill, …}, fromSelection?: bool}",
             has_doc,
             create_para
         ),
@@ -311,7 +318,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Paragraph Style Options…",
             [],
             None,
-            "{name, rename?, basedOn?, nextStyle?, para?: {paragraph attributes, as type.para names them: align, leftIndent, spaceBefore, …; ruleAbove?/ruleBelow?: only the named rule fields change; startAt?: null = continue numbering; kinsoku?: set | null (default rules); a grepStyles pattern that can't compile is an error}, chars?: {character attributes, as type.char names them: fontFamily, fontStyle, size, leading, tracking, fill, …}}",
+            "{name, rename?, basedOn?, nextStyle?, para?: {paragraph attributes, as type.para names them: align, leftIndent, spaceBefore, ignoreOpticalMargin, …; ruleAbove?/ruleBelow?: only the named rule fields change; startAt?: null = continue numbering; kinsoku?: set | null (default rules); a grepStyles pattern that can't compile is an error}, chars?: {character attributes, as type.char names them: fontFamily, fontStyle, size, leading, tracking, fill, …}}",
             has_doc,
             edit_para
         ),
@@ -754,6 +761,48 @@ fn redefine(s: &mut Session, p: &Value, paragraph: bool) -> Result<Value> {
     result
 }
 
+/// Apply paragraph style `name` over `r` in one story; `clear` drops overrides instead of keeping
+/// only those that differ from the style (`resolved` is the style's paragraph and character attributes).
+fn apply_para_in_story(
+    st: &mut designcraft_doc::Story,
+    r: &std::ops::Range<usize>,
+    name: &str,
+    clear: bool,
+    resolved: (&designcraft_doc::ParaProps, &designcraft_doc::CharProps),
+    styles: &designcraft_doc::Styles,
+) {
+    let (style_para, style_chars) = resolved;
+    // Text selections are half-open: a selection ending at the next paragraph's
+    // start must not apply a style to that paragraph too.
+    let end = if r.is_empty() { r.start } else { r.end.saturating_sub(1) };
+    let (first, last) = (st.para_at(r.start), st.para_at(end));
+    st.format_paras(r.start..end, |f| {
+        f.style = name.to_string();
+        if clear {
+            f.para = ParaAttrs::default();
+            f.chars = CharAttrs::default();
+        } else {
+            f.para.retain_differences(style_para);
+            f.chars.retain_differences(style_chars);
+        }
+    });
+    for (pi, range) in st.para_ranges().into_iter().enumerate().take(last.saturating_add(1)).skip(first) {
+        let Some(pf) = st.paras.get(pi) else { continue };
+        let (_, base) = styles.resolve_para(pf);
+        let end = range.end.saturating_add(1).min(st.len());
+        let range = if clear && !r.is_empty() { range.start.max(r.start)..end.min(r.end) } else { range.start..end };
+        st.format_chars(range, |f| {
+            if clear {
+                f.over = CharAttrs::default();
+            } else {
+                let mut inherited = base.clone();
+                inherited.apply(&styles.char_style_attrs(&f.style));
+                f.over.retain_differences(&inherited);
+            }
+        });
+    }
+}
+
 fn apply_para(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("style.paragraph.apply", "missing name"))?.to_string();
     let clear = p.get("clearOverrides").and_then(Value::as_bool).unwrap_or(false);
@@ -765,37 +814,8 @@ fn apply_para(s: &mut Session, p: &Value) -> Result<Value> {
         let styles = d.styles.clone();
         let (style_para, style_chars) = styles.resolve_para_style(&name);
         for t in &targets {
-            let r = &t.range;
             if let Some(st) = d.text_story_mut(t.story, t.cell) {
-                // Text selections are half-open: a selection ending at the next paragraph's
-                // start must not apply a style to that paragraph too.
-                let end = if r.is_empty() { r.start } else { r.end.saturating_sub(1) };
-                let (first, last) = (st.para_at(r.start), st.para_at(end));
-                st.format_paras(r.start..end, |f| {
-                    f.style = name.clone();
-                    if clear {
-                        f.para = ParaAttrs::default();
-                        f.chars = CharAttrs::default();
-                    } else {
-                        f.para.retain_differences(&style_para);
-                        f.chars.retain_differences(&style_chars);
-                    }
-                });
-                for (pi, range) in st.para_ranges().into_iter().enumerate().take(last.saturating_add(1)).skip(first) {
-                    let Some(pf) = st.paras.get(pi) else { continue };
-                    let (_, base) = styles.resolve_para(pf);
-                    let end = range.end.saturating_add(1).min(st.len());
-                    let range = if clear && !r.is_empty() { range.start.max(r.start)..end.min(r.end) } else { range.start..end };
-                    st.format_chars(range, |f| {
-                        if clear {
-                            f.over = CharAttrs::default();
-                        } else {
-                            let mut inherited = base.clone();
-                            inherited.apply(&styles.char_style_attrs(&f.style));
-                            f.over.retain_differences(&inherited);
-                        }
-                    });
-                }
+                apply_para_in_story(st, &t.range, &name, clear, (&style_para, &style_chars), &styles);
             }
         }
         ok()
@@ -934,13 +954,21 @@ fn edit_para(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("style.paragraph.edit", "missing name"))?.to_string();
     let chars: CharAttrs = attrs("style.paragraph.edit", "chars", p, |a: &mut CharAttrs, k, v| a.set_json(k, v))?;
     super::text::validate_char_fill(&s.doc()?.doc, &chars, "style.paragraph.edit")?;
-    let rename = str_param(p, "rename").map(str::to_string);
+    let rename = str_param(p, "rename").map(str::trim).filter(|n| *n != name).map(str::to_string);
     let based = p.get("basedOn").cloned();
     s.edit(|d, _| {
         if let Some(Value::String(b)) = &based
             && d.styles.para_based_on_cycles(&name, b)
         {
             return Err(bad("style.paragraph.edit", "based-on would create a cycle"));
+        }
+        if let Some(n) = &rename {
+            if n.is_empty() || n.starts_with('[') {
+                return Err(bad("style.paragraph.edit", format!("can't rename to `{n}`")));
+            }
+            if d.styles.para(n).is_some() {
+                return Err(bad("style.paragraph.edit", format!("a paragraph style named `{n}` already exists")));
+            }
         }
         // A rule object changes only the rule fields it names, over the style's resolved rule.
         let (current, _) = d.styles.resolve_para_style(&name);
@@ -964,22 +992,33 @@ fn edit_para(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
-/// Rename a paragraph or character style everywhere it's used.
+/// Rename a paragraph or character style everywhere it's used; its Export Tagging follows.
 fn rename_style(d: &mut designcraft_doc::Document, para: bool, from: &str, to: &str) {
+    let st = d.styles_mut();
     if para {
-        for s in &mut d.styles_mut().paragraph {
+        for s in &mut st.paragraph {
             if s.name == from {
                 s.name = to.to_string();
             }
         }
     } else {
-        for s in &mut d.styles_mut().character {
+        for s in &mut st.character {
             if s.name == from {
                 s.name = to.to_string();
             }
         }
     }
+    // An entry already under `to` belongs to no style (names are unique), so it never survives.
+    st.export_tags.remove(&export_tag_key(para, to));
+    if let Some(tag) = st.export_tags.remove(&export_tag_key(para, from)) {
+        st.export_tags.insert(export_tag_key(para, to), tag);
+    }
     redirect_style_refs(d, para, from, to);
+}
+
+/// The `Styles::export_tags` key of a paragraph (`para`) or character style.
+fn export_tag_key(para: bool, name: &str) -> String {
+    format!("{}:{name}", if para { "p" } else { "c" })
 }
 
 /// Point every reference to style `from` at `to`, except the style's own registry entry (its
@@ -1019,6 +1058,9 @@ fn redirect_style_refs(d: &mut designcraft_doc::Document, para: bool, from: &str
             for r in formats.filter(|r| r.as_deref() == Some(from)) {
                 *r = Some(to.to_string());
             }
+        }
+        if let designcraft_doc::EpubSplit::Style(n) = &mut d.settings.epub_split {
+            rename(n);
         }
     } else {
         let from_parent = parent_of(st.character.iter().find(|x| x.name == from).and_then(|x| x.based_on.as_ref()));
@@ -1165,8 +1207,10 @@ fn delete_style(s: &mut Session, p: &Value, para: bool) -> Result<Value> {
         for b in based.into_iter().filter(|b| b.as_deref() == Some(name.as_str())) {
             *b = parent.clone();
         }
+        // The replacement keeps its own Export Tagging.
+        st.export_tags.remove(&export_tag_key(para, &name));
         // Every other use: styles, stories, table cells, nested and GREP styles, notes, defaults.
-        rename_style(d, para, &name, &repl);
+        redirect_style_refs(d, para, &name, &repl);
         ok()
     })
 }
@@ -1220,7 +1264,7 @@ fn edit_char(s: &mut Session, p: &Value) -> Result<Value> {
         .and_then(Value::as_object)
         .map(|o| o.iter().filter(|(_, v)| v.is_null()).map(|(k, _)| k.clone()).collect())
         .unwrap_or_default();
-    let rename = str_param(p, "rename").filter(|n| *n != name).map(|n| n.trim().to_string());
+    let rename = str_param(p, "rename").map(str::trim).filter(|n| *n != name).map(str::to_string);
     let based: Option<Option<String>> = match p.get("basedOn") {
         None => None,
         Some(Value::Null) => Some(None),
@@ -1237,10 +1281,13 @@ fn edit_char(s: &mut Session, p: &Value) -> Result<Value> {
                 return Err(bad("style.character.edit", "based-on would create a cycle"));
             }
         }
-        if let Some(n) = &rename
-            && (n.is_empty() || n.starts_with('[') || d.styles.char_style(n).is_some())
-        {
-            return Err(bad("style.character.edit", format!("can't rename to `{n}`")));
+        if let Some(n) = &rename {
+            if n.is_empty() || n.starts_with('[') {
+                return Err(bad("style.character.edit", format!("can't rename to `{n}`")));
+            }
+            if d.styles.char_style(n).is_some() {
+                return Err(bad("style.character.edit", format!("a character style named `{n}` already exists")));
+            }
         }
         let st = d.styles_mut().char_style_mut(&name).ok_or_else(|| bad("style.character.edit", format!("no character style `{name}`")))?;
         st.chars.merge(&chars);
@@ -2810,6 +2857,13 @@ mod export_tag_tests {
         s.execute("style.exportTag", &json!({"style": "Chapter Title", "tag": "h1", "class": "chapter"})).unwrap();
         s.execute("style.exportTag", &json!({"style": "Key Term", "character": true, "tag": "strong"})).unwrap();
         assert!(s.execute("style.exportTag", &json!({"style": "Nope"})).is_err());
+        // Split Document is for paragraph styles; it alone keeps the tagging.
+        assert!(s.execute("style.exportTag", &json!({"style": "Key Term", "character": true, "split": true})).is_err());
+        s.execute("style.paragraph.create", &json!({"name": "Part"})).unwrap();
+        assert_eq!(s.execute("style.exportTag", &json!({"style": "Part", "split": true})).unwrap()["split"], true);
+        assert!(s.doc().unwrap().doc.styles.export_tag("Part", false).is_some_and(|t| t.split));
+        s.execute("style.exportTag", &json!({"style": "Part", "split": false})).unwrap();
+        assert!(s.doc().unwrap().doc.styles.export_tag("Part", false).is_none(), "an untouched tagging goes");
         let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Origins\nA word"})).unwrap();
         let sid = r["story"].as_u64().unwrap();
         s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
@@ -2825,6 +2879,78 @@ mod export_tag_tests {
         let text = String::from_utf8_lossy(&pdf);
         assert!(text.contains("/S/H1") && text.contains("/S/P"), "structure elements");
         assert!(designcraft_render::pdf_page_count(&pdf) == Some(1));
+    }
+
+    #[test]
+    fn export_tagging_follows_a_renamed_style_and_goes_with_a_deleted_one() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Head"})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Body"})).unwrap();
+        s.execute("style.character.create", &json!({"name": "Term"})).unwrap();
+        s.execute("style.exportTag", &json!({"style": "Head", "tag": "h2", "class": "head"})).unwrap();
+        s.execute("style.exportTag", &json!({"style": "Body", "tag": "p", "class": "body"})).unwrap();
+        s.execute("style.exportTag", &json!({"style": "Term", "character": true, "tag": "em", "class": "term"})).unwrap();
+        let tag = |s: &Session, name: &str, character: bool| {
+            s.doc().unwrap().doc.styles.export_tag(name, character).map(|t| (t.tag.clone(), t.class.clone()))
+        };
+        let pair = |t: &str, c: &str| Some((t.to_string(), c.to_string()));
+        // A rename onto another style's name is refused, so neither tagging is lost.
+        assert!(s.execute("style.paragraph.edit", &json!({"name": "Head", "rename": "Body"})).is_err());
+        assert_eq!((tag(&s, "Head", false), tag(&s, "Body", false)), (pair("h2", "head"), pair("p", "body")));
+
+        s.execute("style.paragraph.edit", &json!({"name": "Head", "rename": "Title"})).unwrap();
+        s.execute("style.character.edit", &json!({"name": "Term", "rename": "Word"})).unwrap();
+        assert_eq!(tag(&s, "Title", false), pair("h2", "head"));
+        assert_eq!(tag(&s, "Head", false), None);
+        assert_eq!(tag(&s, "Word", true), pair("em", "term"));
+        assert_eq!(tag(&s, "Term", true), None);
+        // Moving a style into a group renames it to Group/Name.
+        s.execute("style.group", &json!({"kind": "paragraph", "names": ["Title"], "group": "Heads"})).unwrap();
+        assert_eq!(tag(&s, "Heads/Title", false), pair("h2", "head"));
+        assert_eq!(tag(&s, "Title", false), None);
+
+        for _ in 0..3 {
+            s.execute("edit.undo", &json!({})).unwrap();
+        }
+        assert_eq!(tag(&s, "Head", false), pair("h2", "head"));
+        assert_eq!(tag(&s, "Title", false), None);
+        assert_eq!(tag(&s, "Term", true), pair("em", "term"));
+        assert_eq!(tag(&s, "Word", true), None);
+
+        // Deleting drops the deleted style's tagging; the replacement keeps its own.
+        s.execute("style.paragraph.delete", &json!({"name": "Head", "replaceWith": "Body"})).unwrap();
+        assert_eq!(tag(&s, "Head", false), None);
+        assert_eq!(tag(&s, "Body", false), pair("p", "body"));
+        s.execute("style.character.delete", &json!({"name": "Term"})).unwrap();
+        assert_eq!(tag(&s, "Term", true), None);
+        assert!(s.doc().unwrap().doc.styles.export_tags.keys().all(|k| k == "p:Body"));
+    }
+
+    #[test]
+    fn a_rename_onto_a_taken_name_says_so_and_a_trimmed_rename_drops_a_stale_tag() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        for (kind, a, b) in [("paragraph", "Head", "Body"), ("character", "Term", "Word")] {
+            s.execute(&format!("style.{kind}.create"), &json!({"name": a})).unwrap();
+            s.execute(&format!("style.{kind}.create"), &json!({"name": b})).unwrap();
+            let e = s.execute(&format!("style.{kind}.edit"), &json!({"name": a, "rename": b})).unwrap_err().to_string();
+            assert!(e.contains(&format!("a {kind} style named `{b}` already exists")), "{e}");
+            let e = s.execute(&format!("style.{kind}.edit"), &json!({"name": a, "rename": "[None]"})).unwrap_err().to_string();
+            assert!(e.contains("can't rename to `[None]`"), "{e}");
+        }
+        // An entry left under a name no style has doesn't attach to a style renamed onto it.
+        s.edit(|d, _| {
+            d.styles_mut()
+                .export_tags
+                .insert("p:Title".into(), designcraft_doc::ExportTag { tag: "h6".into(), class: "stale".into(), ..Default::default() });
+            Ok(())
+        })
+        .unwrap();
+        s.execute("style.paragraph.edit", &json!({"name": "Head", "rename": "  Title "})).unwrap();
+        let st = &s.doc().unwrap().doc.styles;
+        assert!(st.para("Title").is_some(), "the new name is trimmed");
+        assert_eq!(st.export_tag("Title", false), None);
     }
 }
 
@@ -2981,6 +3107,7 @@ mod delete_tests {
             d.footnote_options.para_style = "Table Body".into();
             d.endnote_options.para_style = "Table Body".into();
             d.endnote_options.heading_style = "Table Body".into();
+            d.settings.epub_split = designcraft_doc::EpubSplit::Style("Table Body".into());
             d.toc = Some(Toc {
                 story,
                 title: "Contents".into(),
@@ -2999,6 +3126,7 @@ mod delete_tests {
         assert_eq!((sub.based_on.as_deref(), sub.next_style.as_deref()), (Some("Body"), Some("Body")));
         assert_eq!(d.styles.default_paragraph, "Body");
         assert_eq!(d.endnote_options.heading_style, "Body");
+        assert_eq!(d.settings.epub_split, designcraft_doc::EpubSplit::Style("Body".into()), "EPUB Split Document follows the replacement");
         let after = s.execute("preflight.run", &json!({})).unwrap();
         assert!(!after.to_string().contains("Table Body"), "{after}");
     }

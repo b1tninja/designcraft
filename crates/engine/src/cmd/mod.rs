@@ -6,7 +6,7 @@ mod articles;
 pub mod book;
 mod buttons;
 pub(crate) mod captions;
-mod changes;
+pub(crate) mod changes;
 mod color_theme;
 mod colorsettings;
 mod conditions;
@@ -16,6 +16,7 @@ mod editorial;
 mod endnotes;
 mod export;
 mod file;
+mod file_info;
 pub(crate) mod find;
 pub use edit::copied_objects_text;
 pub use find::same_find_domain;
@@ -171,6 +172,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
     SPECS.get_or_init(|| {
         let mut v = Vec::new();
         v.extend(file::specs());
+        v.extend(file_info::specs());
         v.extend(interchange::specs());
         v.extend(export::specs());
         v.extend(edit::specs());

@@ -65,10 +65,11 @@ impl NativeMenu {
         // muda keeps the first handler for the life of the process, so this channel serves every
         // menu bar built later (`build_bar`).
         let (tx, events) = channel();
-        let repaint = ctx.clone();
+        let notify = app.native_action_notifier(ctx.clone());
         MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
-            let _ = tx.send(e);
-            repaint.request_repaint();
+            if tx.send(e).is_ok() {
+                notify();
+            }
         }));
         Self::build_bar(app, events)
     }
@@ -170,11 +171,14 @@ impl NativeMenu {
     }
 
     pub fn poll(&mut self, app: &mut DesignApp, ctx: &egui::Context) {
-        while let Ok(ev) = self.events.try_recv() {
-            if let Some((cmd, params, _)) = self.items.get(ev.id.as_ref()) {
-                menus::activate_native(app, ctx, &cmd.clone(), &params.clone());
+        app.poll_native_actions(ctx, || {
+            loop {
+                let ev = self.events.try_recv().ok()?;
+                if let Some((cmd, params, _)) = self.items.get(ev.id.as_ref()) {
+                    return Some((cmd.clone(), params.clone()));
+                }
             }
-        }
+        });
         // Interface Language and Show CJK Features (set in Preferences or by `app.language`, or put
         // back by Cancel): the system menu bar follows at once, like the panels (the new menu
         // replaces the old one as the application's menu before that one is dropped).
