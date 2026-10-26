@@ -17,7 +17,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Print…",
             ["File"],
             Some("Cmd+P"),
-            "{printer?, copies?: 1, pages?: \"1-3,5\", spreads?, marks?, bleed?, grayscale?: bool (send gray pages: every page rendered to Rec. 709 gray, and the driver told), dryRun?: bool (export and preview submission without printing), created?: int (Unix seconds, as file.exportPdf)} → {printer, copies, pages, command, bytes}",
+            "{printer?, copies?: 1, pages?: \"1-3,5\", spreads?, marks?, bleed?, grayscale?: bool (send gray pages: every page rendered to Rec. 709 gray, and the driver told), dryRun?: bool (export and preview submission without printing), …the PDF settings of file.exportPdf (the PDF it writes is what prints)} → {printer, copies, pages, command, bytes, warnings}",
             has_doc,
             print
         ),
@@ -57,30 +57,28 @@ pub struct PrintDocument {
 /// Export the active document as a print-ready PDF (see [`PrintDocument`]). Sends nothing.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn print_document(s: &mut Session, p: &Value) -> Result<PrintDocument> {
+    let mut pdf = print_pdf(s, p)?.bytes;
     let d = &s.doc()?.doc;
-    let opts = print_options(p, d.page_count())?;
-    let mut pdf = export_print_pdf(d, &s.cache, &opts)?;
     if p.get("grayscale").and_then(Value::as_bool).unwrap_or(false) {
         pdf = grayscale_pdf(&pdf, Some(&d.title))?;
     }
     // The PDF's sheets: printed as spreads, two document pages share one.
-    let pages = designcraft_render::pdf_page_count(&pdf).unwrap_or_else(|| opts.pages.as_ref().map_or(d.page_count(), |v| v.len()));
+    let pages = designcraft_render::pdf_page_count(&pdf).unwrap_or_else(|| p_pages(p, d.page_count()));
     Ok(PrintDocument { pdf, pages, title: d.title.clone() })
 }
 
-/// The PDF a print sends: the document with every placed PDF's content box measured
-/// ([`super::interchange::with_pdf_boxes`]), so a network job and a system queue crop alike.
+/// The PDF that File › Export PDF writes for `p`, as a print-only export (no annotations: links,
+/// buttons, form fields and media don't print, and the Windows spooler path refuses to fit a page
+/// that carries any).
 #[cfg(not(target_arch = "wasm32"))]
-fn export_print_pdf(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache, opts: &designcraft_pdf::PdfOptions) -> Result<Vec<u8>> {
-    designcraft_pdf::export_pdf(&super::interchange::with_pdf_boxes(d), cache, opts).map_err(|e| EngineError::Other(e.to_string()))
+fn print_pdf(s: &Session, p: &Value) -> Result<designcraft_pdf::ExportReport> {
+    super::export::pdf_export_for(s, p, true)
 }
 
-/// The export options of a print: the user's page selection, spreads, marks and bleed, as a print-only
-/// export (no annotations: links, buttons, form fields and media don't print, and the Windows spooler
-/// path refuses to fit a page that carries any).
+/// How many pages `p`'s page selection names (all of the document's `page_count` without one).
 #[cfg(not(target_arch = "wasm32"))]
-fn print_options(p: &Value, page_count: usize) -> Result<designcraft_pdf::PdfOptions> {
-    Ok(designcraft_pdf::PdfOptions { print: true, ..super::export::options(p, page_count)? })
+fn p_pages(p: &Value, page_count: usize) -> usize {
+    super::export::options(p, page_count).ok().and_then(|o| o.pages.map(|v| v.len())).unwrap_or(page_count)
 }
 
 /// Resolution the gray pages are composed at.
@@ -130,7 +128,7 @@ fn print_with(
     submit: impl FnOnce(&[u8], &craft_print::Job) -> std::result::Result<String, craft_print::Error>,
 ) -> Result<Value> {
     let d = &s.doc()?.doc;
-    let opts = print_options(p, d.page_count())?;
+    let opts = super::export::options(p, d.page_count())?;
     let grayscale = p.get("grayscale").and_then(Value::as_bool).unwrap_or(false);
     let copies = p.get("copies").and_then(Value::as_u64).unwrap_or(1).clamp(1, 999) as u32;
     let job = craft_print::Job {
@@ -144,13 +142,15 @@ fn print_with(
         ..craft_print::Job::default()
     };
     let dry = p.get("dryRun").and_then(Value::as_bool).unwrap_or(false);
-    let mut pdf = export_print_pdf(d, &s.cache, &opts)?;
+    // The PDF that Export PDF writes with these settings, minus the interactive layer.
+    let mut report = print_pdf(s, p)?;
     if grayscale && !dry {
-        pdf = grayscale_pdf(&pdf, Some(&d.title))?;
+        report.bytes = grayscale_pdf(&report.bytes, Some(&d.title))?;
     }
+    let (pdf, warnings) = (report.bytes, report.warnings);
     let command = craft_print::command_preview(&job).map_err(|e| bad("file.print", e.to_string()))?;
     let pages = opts.pages.as_ref().map_or(d.page_count(), |v| v.len());
-    let out = json!({"printer": job.printer, "copies": copies, "pages": pages, "command": command, "bytes": pdf.len()});
+    let out = json!({"printer": job.printer, "copies": copies, "pages": pages, "command": command, "bytes": pdf.len(), "warnings": warnings});
     if !dry {
         submit(&pdf, &job).map_err(|e| bad("file.print", e.to_string()))?;
     }
@@ -197,11 +197,7 @@ mod tests {
         s.execute("file.new", &json!({"pages": 4})).unwrap();
         // A fixed creation date: both exports would otherwise take the clock's second.
         let params = json!({"printer": "Office (east)", "copies": 2, "pages": "2-3", "marks": true, "bleed": true, "created": 1_700_000_000});
-        let expected = {
-            let d = &s.doc().unwrap().doc;
-            let options = print_options(&params, d.page_count()).unwrap();
-            export_print_pdf(d, &s.cache, &options).unwrap()
-        };
+        let expected = super::super::export::pdf_export(&s, &params).unwrap().bytes;
         let r = print_with(&mut s, &params, |pdf, job| {
             // The production export options and full bytes reach the shared spooler boundary.
             assert_eq!(pdf, expected);
@@ -362,5 +358,35 @@ mod tests {
         assert_eq!(designcraft_pdf::rec709_luma(255, 0, 0), 54);
         assert_eq!(designcraft_pdf::rec709_luma(0, 255, 0), 182);
         assert_eq!(designcraft_pdf::rec709_luma(0, 0, 255), 18);
+    }
+
+    /// File › Print spools the PDF that File › Export PDF writes with the same settings: soft
+    /// effects as images, CMYK print color, the same warnings.
+    #[test]
+    fn print_spools_what_export_pdf_writes() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let id = s.execute("frame.create", &json!({"rect": [72, 72, 200, 200]})).unwrap()["id"].clone();
+        s.execute("object.fill", &json!({"ids": [id], "swatch": "C=100 M=0 Y=0 K=0"})).unwrap();
+        s.execute("object.dropShadow", &json!({"ids": [id], "on": true, "distance": 8, "size": 6})).unwrap();
+        let params = json!({"standard": "x4"});
+        // The creation date is in whole seconds: an attempt can straddle a second boundary.
+        let mut matched = false;
+        for _ in 0..3 {
+            let exported = s.execute("file.exportPdf", &params).unwrap();
+            let mut printed = Vec::new();
+            let r = print_with(&mut s, &params, |pdf, _| {
+                printed = pdf.to_vec();
+                Ok("request id is Office-1".into())
+            })
+            .unwrap();
+            assert_eq!(r["warnings"], exported["warnings"]);
+            assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("soft effects")), "{r}");
+            if printed == super::super::file::base64_decode(exported["base64"].as_str().unwrap()) {
+                matched = true;
+                break;
+            }
+        }
+        assert!(matched, "File › Print spools Export PDF's bytes");
     }
 }
