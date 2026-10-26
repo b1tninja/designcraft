@@ -26,6 +26,8 @@ impl UiState {
     pub fn read_preferences(bytes: &[u8]) -> serde_json::Result<ReadPreferences> {
         let mut saved: Value = serde_json::from_slice(bytes)?;
         let mut intact = recover_docking(&mut saved);
+        // Shortcut sets this version cannot read load as none (`lenient_sets`): keep the file.
+        intact &= saved.get("shortcutSets").is_none_or(|v| v.is_null() || serde_json::from_value::<craft_keymap::Profiles>(v.clone()).is_ok());
         if let Some(workspaces) = saved.get_mut("customWorkspaces").and_then(Value::as_array_mut) {
             for workspace in workspaces {
                 intact &= recover_docking(workspace);
@@ -40,6 +42,67 @@ impl UiState {
         }
         Ok(ReadPreferences { ui, intact })
     }
+}
+
+/// `UiState::shortcuts` in ui.json. `shortcuts` maps each changed command to its first
+/// shortcut (`""` for none): the map of one text per command that earlier DesignCraft versions
+/// read, and fail on with anything else, which drops the whole file. A command's further
+/// shortcuts go in `shortcutsMore` (command → texts), which those versions ignore. Loading
+/// appends them to the command's entry in `shortcuts`; extra shortcuts for a command missing
+/// there are ignored, because an earlier version that saved the file left that command at its
+/// defaults. `shortcuts` also loads in the shared keymap's array form, which the first builds
+/// on it wrote.
+pub(crate) mod saved_shortcuts {
+    use std::collections::BTreeMap;
+
+    use craft_keymap::{MAX_BINDINGS, Overrides};
+    use serde::ser::SerializeMap;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(overrides: &Overrides, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut first = BTreeMap::new();
+        let mut more = BTreeMap::new();
+        for (command, texts) in overrides.iter() {
+            // A blank text is no shortcut, as `""` is in the map.
+            let mut texts = texts.iter().map(String::as_str).filter(|t| !t.trim().is_empty());
+            first.insert(command, texts.next().unwrap_or_default());
+            let rest: Vec<&str> = texts.collect();
+            if !rest.is_empty() {
+                more.insert(command, rest);
+            }
+        }
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("shortcuts", &first)?;
+        if !more.is_empty() {
+            map.serialize_entry("shortcutsMore", &more)?;
+        }
+        map.end()
+    }
+
+    // `Overrides` loads leniently (never fails), so neither field can make ui.json unreadable.
+    #[derive(Default, Deserialize)]
+    #[serde(default, rename_all = "camelCase")]
+    struct Saved {
+        shortcuts: Overrides,
+        shortcuts_more: Overrides,
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Overrides, D::Error> {
+        let Saved { mut shortcuts, shortcuts_more } = Saved::deserialize(deserializer)?;
+        for (command, rest) in shortcuts_more.iter() {
+            let Some(first) = shortcuts.get(command) else { continue };
+            let texts: Vec<String> = first.iter().chain(rest).take(MAX_BINDINGS).cloned().collect();
+            shortcuts.insert(command, texts);
+        }
+        Ok(shortcuts)
+    }
+}
+
+/// `UiState::shortcut_sets`: anything that does not read as shortcut sets (a later format, a
+/// hand edit) loads as none, keeping the rest of ui.json and the `shortcuts` the keymap uses.
+pub(crate) fn lenient_sets<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<craft_keymap::Profiles, D::Error> {
+    let value = <Value as serde::Deserialize>::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
 /// Files from before the canvas joined the panel layout saved the flyout open at quit as
@@ -182,6 +245,18 @@ mod tests {
         assert!(!original.docking_hidden.is_empty());
         assert_eq!(loaded.docking_hidden, original.docking_hidden);
         assert_eq!(loaded.custom_workspaces[0].docking_hidden, original.custom_workspaces[0].docking_hidden);
+    }
+
+    #[test]
+    fn unreadable_shortcut_sets_are_reported_so_the_file_is_kept() {
+        let mut saved = serde_json::to_value(populated()).unwrap();
+        assert!(UiState::read_preferences(&serde_json::to_vec(&saved).unwrap()).unwrap().intact);
+        saved.as_object_mut().unwrap().remove("shortcutSets");
+        assert!(UiState::read_preferences(&serde_json::to_vec(&saved).unwrap()).unwrap().intact, "no sets is no loss");
+        saved["shortcutSets"] = json!("a later format");
+        let read = UiState::read_preferences(&serde_json::to_vec(&saved).unwrap()).unwrap();
+        assert!(!read.intact);
+        assert!(read.ui.shortcut_sets.sets().is_empty(), "the rest of ui.json still loads");
     }
 
     #[test]

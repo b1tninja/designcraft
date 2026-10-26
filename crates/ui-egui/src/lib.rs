@@ -17,6 +17,7 @@ pub mod dock;
 pub mod effects_dialog;
 pub mod i18n;
 pub mod icons;
+pub mod keys;
 pub mod menus;
 mod modal_drag;
 #[cfg(not(target_arch = "wasm32"))]
@@ -30,7 +31,9 @@ mod prefs;
 pub mod render_worker;
 mod rtl;
 mod section_options;
+pub mod separations;
 mod shortcut_import;
+mod shortcuts_dialog;
 pub mod story_editor;
 pub mod taskbar;
 pub mod theme;
@@ -310,11 +313,9 @@ pub struct UiState {
     pub pdf_export: PdfExportSettings,
     /// The Preview checkbox of Paragraph/Character Style Options, remembered between openings.
     pub style_preview: bool,
-    /// View › Separations Preview: a process plate (0–3) and/or an ink limit (total, 0–4).
+    /// View › Separations Preview: the plate shown and the ink limit; `None` is off.
     #[serde(skip)]
-    pub separation: Option<u8>,
-    #[serde(skip)]
-    pub ink_limit: Option<f32>,
+    pub separations: Option<separations::Separations>,
     /// View › Display Performance.
     pub display_quality: designcraft_render::DisplayQuality,
     /// Preferences › Interface › UI scaling (1 = 100%).
@@ -324,8 +325,14 @@ pub struct UiState {
     pub rich_black: bool,
     /// View › Overprint Preview.
     pub overprint_preview: bool,
-    /// Edit › Keyboard Shortcuts: command id → shortcut ("" = none), over the defaults.
-    pub shortcuts: std::collections::BTreeMap<String, String>,
+    /// Edit › Keyboard Shortcuts: the active shortcut set's changes to the default shortcuts, which
+    /// the keymap uses. Saved as `shortcuts` and `shortcutsMore` (see `prefs::saved_shortcuts`),
+    /// which earlier versions read.
+    #[serde(flatten, with = "prefs::saved_shortcuts")]
+    pub shortcuts: craft_keymap::Overrides,
+    /// The user's named shortcut sets and which one is active (see `shortcuts_dialog`).
+    #[serde(deserialize_with = "prefs::lenient_sets")]
+    pub shortcut_sets: craft_keymap::Profiles,
     pub control_bar: bool,
     pub tools_double_column: bool,
     /// The front tab of the default layout's Properties · Pages · Layers group. `dock_tab`,
@@ -486,13 +493,13 @@ impl Default for UiState {
             flattener: String::new(),
             pdf_export: PdfExportSettings::default(),
             style_preview: false,
-            separation: None,
-            ink_limit: None,
+            separations: None,
             display_quality: designcraft_render::DisplayQuality::High,
             ui_scale: 1.0,
             rich_black: true,
             overprint_preview: false,
             shortcuts: Default::default(),
+            shortcut_sets: Default::default(),
             control_bar: false,
             tools_double_column: false,
             dock_tab: "properties".into(),
@@ -614,6 +621,7 @@ impl CanvasCache {
             display_key: None,
             patcher: designcraft_render::Renderer::new(),
             patches: 0,
+            separations: separations::Preview::default(),
         }
     }
 }
@@ -645,6 +653,8 @@ pub struct CanvasCache {
     pub patcher: designcraft_render::Renderer,
     /// Partial repaints / full renders since start (perf readout).
     pub patches: u64,
+    /// View › Separations Preview: the visible spreads' plates.
+    pub separations: separations::Preview,
 }
 
 #[derive(Default, Clone, Copy, Debug, Serialize)]
@@ -794,8 +804,16 @@ pub struct DesignApp {
     pub(crate) pending_window_commands: Vec<egui::ViewportCommand>,
     /// The host installed a native menu bar (macOS): don't draw menus in the window.
     pub native_menu: bool,
-    /// Shortcuts the native menu handles (skip them in the egui shortcut handler).
-    pub native_shortcuts: std::collections::HashSet<String>,
+    /// The commands the native menu bar gives a key equivalent, with that shortcut: the egui
+    /// shortcut handler leaves that key to the bar and runs the command's other bindings itself.
+    pub native_shortcuts: std::collections::HashMap<String, String>,
+    /// Every command's shortcuts, with the user's changes (`ui.shortcuts`) applied.
+    pub keymap: craft_keymap::Keymap,
+    pub(crate) key_dispatcher: craft_keymap::egui::Dispatcher,
+    /// The open Keyboard Shortcuts dialog.
+    pub(crate) shortcut_dialog: Option<Box<shortcuts_dialog::Host>>,
+    /// Answers the user gave in an import review (item → command), for later imports.
+    pub(crate) shortcut_answers: std::collections::BTreeMap<String, craft_keymap::CommandRef>,
     last_time: f64,
     /// When recovery data was last written (seconds on the monotonic clock; see [`now_ms`]).
     pub last_recovery: f64,
@@ -923,6 +941,10 @@ impl DesignApp {
             pending_window_commands: vec![],
             native_menu: false,
             native_shortcuts: Default::default(),
+            keymap: keys::new_keymap(craft_keymap::Overrides::new()),
+            key_dispatcher: craft_keymap::egui::Dispatcher::new(),
+            shortcut_dialog: None,
+            shortcut_answers: Default::default(),
             last_time: now,
             last_recovery: now,
             egui_ctx: None,
@@ -1370,6 +1392,27 @@ impl DesignApp {
         }
     }
 
+    /// Applies `ui.shortcuts` to the keymap when they differ, e.g. after preferences were loaded,
+    /// and rebuilds it when the shortcut platform changed (the web build learns the browser's
+    /// operating system on the first frame). Outside the Keyboard Shortcuts dialog the active
+    /// shortcut set takes `ui.shortcuts` too: an earlier version may have changed them.
+    pub fn sync_keymap(&mut self) {
+        if self.shortcut_dialog.is_none() {
+            keys::store_in_set(&mut self.ui);
+        }
+        if self.keymap.platform() != keys::platform() {
+            self.keymap = keys::new_keymap(self.ui.shortcuts.clone());
+        } else if *self.keymap.overrides() != self.ui.shortcuts {
+            self.keymap.set_overrides(self.ui.shortcuts.clone());
+        }
+    }
+
+    /// Whether the Keyboard Shortcuts dialog is recording keys: a native menu bar pauses its key
+    /// equivalents meanwhile, so the keys reach the dialog.
+    pub fn shortcut_recording(&self) -> bool {
+        self.shortcut_dialog.as_ref().is_some_and(|d| d.recording())
+    }
+
     pub fn select_tool(&mut self, id: &str) {
         let _ = self.run("tool.select", json!({"tool": id}));
         self.ui.flyout = None;
@@ -1468,6 +1511,8 @@ impl DesignApp {
         if self.egui_ctx.is_none() {
             self.egui_ctx = Some(ctx.clone());
         }
+        keys::note_platform(ctx);
+        self.sync_keymap();
         self.window_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
         self.apply_saved_color_settings();
         let scale = self.ui.ui_scale.clamp(0.5, 3.0);

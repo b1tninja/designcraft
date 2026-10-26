@@ -38,6 +38,7 @@
 
 mod export;
 mod gradient_inks;
+pub mod inks;
 mod links;
 mod marks;
 mod text;

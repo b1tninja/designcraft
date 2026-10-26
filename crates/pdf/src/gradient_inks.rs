@@ -58,7 +58,7 @@ impl Exporter<'_> {
                     n = base;
                 }
                 SwatchValue::Color { color_type: ColorType::Spot, .. } => {
-                    let (ink, process) = self.doc.inks.resolve(&sw.name);
+                    let (ink, process) = crate::inks::spot_output(self.doc, &self.inks, &sw.name);
                     let target =
                         self.doc.swatch(ink).filter(|w| matches!(w.value, SwatchValue::Color { color_type: ColorType::Spot, .. })).unwrap_or(sw);
                     let SwatchValue::Color { color, .. } = &target.value else { return None };

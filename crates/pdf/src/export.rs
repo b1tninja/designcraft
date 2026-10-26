@@ -194,6 +194,7 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
 
     let mut ex = Exporter {
         drawing_items: Vec::new(),
+        inks: crate::inks::ink_set(doc),
         doc,
         cache,
         opts,
@@ -456,6 +457,7 @@ fn export_booklet_inner(doc: &Document, cache: &Cache, opts: &BookletOptions) ->
     let pdf = writer.document_mut();
     let mut ex = Exporter {
         drawing_items: Vec::new(),
+        inks: crate::inks::ink_set(doc),
         doc,
         cache,
         opts: &pdf_opts,
@@ -609,6 +611,8 @@ impl std::hash::Hasher for ConstantImageHasher {
 
 pub(crate) struct Exporter<'a> {
     pub doc: &'a Document,
+    /// The document's inks with its Ink Manager settings.
+    pub(crate) inks: craft_prepress::InkSet,
     pub cache: &'a Cache,
     pub opts: &'a PdfOptions,
     /// Current sheet's visible area (spread space) for culling.
@@ -799,7 +803,7 @@ impl Exporter<'_> {
                 SwatchValue::Registration => return Some(registration(t, self.rgb_only)),
                 SwatchValue::Color { color: _, color_type: ColorType::Spot } => {
                     // Ink Manager: an alias prints on another ink; converted inks go to process.
-                    let (ink, process) = self.doc.inks.resolve(&sw.name);
+                    let (ink, process) = crate::inks::spot_output(self.doc, &self.inks, &sw.name);
                     let target =
                         self.doc.swatch(ink).filter(|w| matches!(w.value, SwatchValue::Color { color_type: ColorType::Spot, .. })).unwrap_or(sw);
                     let SwatchValue::Color { color, .. } = &target.value else { break };
@@ -2201,6 +2205,7 @@ mod image_content_cache_tests {
     fn exporter<'a>(doc: &'a Document, cache: &'a Cache, opts: &'a PdfOptions) -> Exporter<'a> {
         Exporter {
             drawing_items: Vec::new(),
+            inks: crate::inks::ink_set(doc),
             doc,
             cache,
             opts,

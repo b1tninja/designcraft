@@ -86,15 +86,31 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.palette", "Quick Apply…", Some("Cmd+Return"), "{} — search styles and commands"),
     ("app.preferences", "Preferences…", Some("Cmd+K"), "{}"),
     ("window.uiScale", "UI Scaling", None, "{scale: 0.5–3 (1 = 100%)} — the size of the whole interface"),
-    ("app.keyboardShortcuts", "Keyboard Shortcuts…", None, "{} — view and change the shortcut of any command"),
+    (
+        "app.keyboardShortcuts",
+        "Keyboard Shortcuts…",
+        None,
+        "{command?, params?} — view and change the shortcut of any command, and the shortcut sets; with command, the dialog opens on it",
+    ),
+    (
+        "window.shortcutSets",
+        "Shortcut Sets",
+        None,
+        "{select?: name} — the shortcut sets (Default is built in; Edit › Keyboard Shortcuts makes the others); select makes one active → {active, sets, builtIn}",
+    ),
     ("window.richBlack", "Appearance of Black", None, "{on: bool} — show 100% black as rich black on screen (off: accurately)"),
-    ("window.setShortcut", "Set Shortcut", None, "{id, shortcut: \"Cmd+Alt+J\" | \"\" (none) | null (default)} → {shortcut, conflicts: [ids]}"),
-    ("window.resetShortcuts", "Reset Shortcuts", None, "{} — every command back to its default shortcut"),
+    (
+        "window.setShortcut",
+        "Set Shortcut",
+        None,
+        "{id, params?, shortcut: \"Cmd+Alt+J\" | \"\" (none) | null (default), steal?} — id is a command; a panel is id \"window.panel\" with params {panel: \"layers\"}, a tool is id \"tool.select\" with params {tool: \"pen\"} (or its tool id, \"pen\"); steal: true takes the keys from the commands holding them → {shortcut, conflicts: [command keys: ids, or `window.panel {\"panel\":\"layers\"}`]}",
+    ),
+    ("window.resetShortcuts", "Reset Shortcuts", None, "{} — every command of the active shortcut set back to its default shortcut"),
     (
         "window.importShortcuts",
         "Import InDesign Shortcut Set",
         None,
-        "{path | text} — a set saved by InDesign's Show Set (.txt): matched commands take its Default shortcuts (or none), other commands lose keys it takes → {set, imported, changed, conflictsCleared, skipped (an earlier item whose keys a later one took), unmatched, unmatchedWithoutShortcut, unreadable}",
+        "{path | text} — a set saved by InDesign's Show Set (.txt), imported as a new shortcut set, which becomes active: matched commands, panels (Window menu items) and tools (Tools items) take its Default shortcuts (an item without Default keys takes its Text keys), or none when every item matched to them has none; other commands lose keys it takes unless they share them as defaults → {set, imported, changed [{id, label, item, line, from, to}], conflictsCleared [{id, label, shortcut}], skipped [{id, item, line, shortcut, takenBy, reason}] (an earlier item whose keys a later one took, or a reserved key), failed [{id, label, change, shortcuts}], unmatched [{item, line, keys, reason: noMatch | ambiguous | tool | context}], unmatchedWithoutShortcut, unreadable [{item, line, keys, reason}], approximated [{item, line, keys, note}] (numeric keypad keys bound as the main keys), suggestions [{item, line, candidates}] (never applied), matchedWithoutChange [{id, label, item, line, reason}] (a keyless panel-menu item that clears nothing), truncated, shortcutSet (the new set's name)}; ids are command keys (`window.panel {\"panel\":\"layers\"}`)",
     ),
     ("app.findChange", "Find/Change…", Some("Cmd+F"), "{}"),
     ("app.insertTableDialog", "Create Table…", None, "{} — Insert Table dialog (body/header/footer rows, columns)"),
@@ -244,7 +260,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         "{target?: workingCmyk|srgb|legacyMacRgb|monitorRgb|protanopia|deuteranopia|cmyk:<profile>, intent?, simulatePaper?: bool|\"toggle\"}",
     ),
     ("app.colorSettings", "Color Settings…", None, "{} — the working spaces, intent and black-point compensation"),
-    ("view.separations", "Separations Preview", None, "{plate?: cyan|magenta|yellow|black|null, inkLimit?: percent|null}"),
+    (
+        "view.separations",
+        "Separations Preview",
+        None,
+        "{on?: bool, plate?: all|cyan|magenta|yellow|black|spot ink name|null (null: all inks, and off unless an ink limit stays), inkLimit?: percent|null} — the plates of the PDF Export PDF writes → {on, plate, inkLimit, spread, inks: [{name, spot}], dpi, warning?, error?}",
+    ),
     ("view.overprintPreview", "Overprint Preview", Some("Cmd+Alt+Shift+Y"), "{} — show how overprinting inks mix"),
     ("view.fastDisplay", "Fast Display", Some("Cmd+Alt+Shift+Z"), "{} — placed graphics as grey boxes, no effects"),
     ("view.typicalDisplay", "Typical Display", Some("Cmd+Alt+Z"), "{} — low-resolution image proxies"),
@@ -838,6 +859,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:view.proofColors",
             ">Separations Preview",
             "ui:view.separations|Off|{\"plate\": null, \"inkLimit\": null}",
+            "ui:view.separations|All Inks|{\"plate\": \"all\"}",
             "ui:view.separations|Cyan|{\"plate\": \"cyan\"}",
             "ui:view.separations|Magenta|{\"plate\": \"magenta\"}",
             "ui:view.separations|Yellow|{\"plate\": \"yellow\"}",
@@ -945,6 +967,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             ">Output",
             "ui:window.panel|Attributes|{\"panel\": \"attributes\"}",
             "ui:window.panel|Preflight|{\"panel\": \"preflight\"}",
+            "ui:window.panel|Separations Preview|{\"panel\": \"separations\"}",
             "<",
             "ui:window.panel|Pages|{\"panel\": \"pages\"}",
             "ui:window.panel|Properties|{\"panel\": \"properties\"}",
@@ -1698,16 +1721,7 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             app.ui.dialog = Some(crate::dialogs::Dialog::new("colorSettings", f));
             Ok(Value::Null)
         }
-        "view.separations" => {
-            if let Some(v) = p.get("plate") {
-                app.ui.separation = v.as_str().and_then(|s| ["cyan", "magenta", "yellow", "black"].iter().position(|x| *x == s)).map(|i| i as u8);
-            }
-            if let Some(v) = p.get("inkLimit") {
-                app.ui.ink_limit = v.as_f64().map(|l| (l / 100.0) as f32);
-            }
-            app.canvas.shown = None;
-            Ok(Value::Null)
-        }
+        "view.separations" => separations_view(app, p),
         "view.firstPage" | "view.previousPage" | "view.nextPage" | "view.lastPage" => {
             let n = app.session.active().map_or(0, |d| d.doc.page_count());
             if n > 0 {
@@ -1772,36 +1786,60 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             app.run("object.fit", json!({"mode": mode}))
         }
         "app.keyboardShortcuts" => {
-            app.ui.dialog = Some(crate::dialogs::Dialog::new("keyboardShortcuts", json!({"query": "", "recording": ""})));
+            let select = p.get("command").and_then(Value::as_str).map(|id| crate::keys::command_ref(id, p.get("params").unwrap_or(&Value::Null)));
+            crate::shortcuts_dialog::open(app, select.as_ref());
             Ok(Value::Null)
         }
+        "window.shortcutSets" => {
+            let builtins = &crate::shortcuts_dialog::BUILTINS;
+            if let Some(name) = p.get("select").and_then(Value::as_str) {
+                if app.shortcut_dialog.is_some() {
+                    return Some(Err("close the Keyboard Shortcuts dialog first".into()));
+                }
+                if let Err(e) = app.ui.shortcut_sets.select(name, builtins) {
+                    return Some(Err(format!("{name}: {e}")));
+                }
+                crate::shortcuts_dialog::load_active_set(app);
+            }
+            let sets = &app.ui.shortcut_sets;
+            Ok(
+                json!({"active": sets.active_name(builtins), "sets": sets.names(builtins), "builtIn": builtins.iter().map(|(n, _)| *n).collect::<Vec<_>>()}),
+            )
+        }
+        // The open Keyboard Shortcuts dialog edits the keys itself, and its Cancel puts back the
+        // ones it started with, which would undo a change made here.
+        "window.setShortcut" | "window.resetShortcuts" | "window.importShortcuts" if app.shortcut_dialog.is_some() => {
+            Err("close the Keyboard Shortcuts dialog first".into())
+        }
         "window.setShortcut" => {
-            let Some(cmd) = p.get("id").and_then(Value::as_str) else { return Some(Err("missing id".into())) };
-            if designcraft_engine::find_command(cmd).is_none() && ui_label(cmd).is_none() {
-                return Some(Err(format!("unknown command `{cmd}`")));
+            let Some(id) = p.get("id").and_then(Value::as_str) else { return Some(Err("missing id".into())) };
+            let mut cmd = crate::keys::command_ref(id, p.get("params").unwrap_or(&Value::Null));
+            // A bare tool id ("pen") names its tool.
+            if app.keymap.bindable(&cmd).is_none() && designcraft_tools::tool_info(id).is_some() {
+                cmd = crate::keys::tool(id);
             }
-            match p.get("shortcut") {
-                None | Some(Value::Null) => {
-                    app.ui.shortcuts.remove(cmd);
-                }
-                Some(Value::String(sc)) if sc.is_empty() => {
-                    app.ui.shortcuts.insert(cmd.to_string(), String::new());
-                }
-                Some(Value::String(sc)) => {
-                    if parse_shortcut(sc).is_none() {
-                        return Some(Err(format!("can't read shortcut `{sc}`")));
-                    }
-                    app.ui.shortcuts.insert(cmd.to_string(), sc.clone());
-                }
+            let shortcut = match p.get("shortcut") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(sc)) => Some(sc.as_str()),
                 Some(_) => return Some(Err("shortcut: a string or null".into())),
+            };
+            let steal = p.get("steal").and_then(Value::as_bool).unwrap_or(false);
+            let policy = if steal { craft_keymap::Policy::Steal } else { craft_keymap::Policy::Keep };
+            let taken = match crate::keys::set(app, &cmd, shortcut, policy) {
+                Ok(t) => t,
+                Err(e) => return Some(Err(e)),
+            };
+            let mut conflicts: Vec<String> = taken.iter().filter(|c| !crate::keys::twins(&cmd, c)).map(|c| c.key()).collect();
+            for key in crate::keys::conflicts(&app.keymap, &cmd) {
+                if !conflicts.contains(&key) {
+                    conflicts.push(key);
+                }
             }
-            let sc = shortcut_of(app, cmd);
-            let conflicts: Vec<String> =
-                effective_shortcuts(app).into_iter().filter(|(i, s)| i != cmd && Some(s) == sc.as_ref()).map(|(i, _)| i).collect();
-            Ok(json!({"shortcut": sc, "conflicts": conflicts}))
+            Ok(json!({"shortcut": crate::keys::shortcut(&app.keymap, &cmd), "conflicts": conflicts}))
         }
         "window.resetShortcuts" => {
-            app.ui.shortcuts.clear();
+            app.keymap.reset_all();
+            crate::keys::store(app);
             Ok(Value::Null)
         }
         "window.importShortcuts" => {
@@ -2172,6 +2210,61 @@ fn export_bytes(app: &mut DesignApp, p: &Value, ext: &str, cmd: &str) -> Result<
     }
 }
 
+/// View › Separations Preview (`view.separations`): updates the plate and the ink limit and
+/// reports the plates of the spread nearest the view center.
+fn separations_view(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
+    let mut sep = app.ui.separations.clone().unwrap_or_default();
+    let mut on = app.ui.separations.is_some();
+    match p.get("plate") {
+        Some(Value::String(s)) if s.eq_ignore_ascii_case("all") || s.is_empty() => {
+            sep.plate = None;
+            on = true;
+        }
+        Some(Value::String(s)) => {
+            let process = ["Cyan", "Magenta", "Yellow", "Black"].into_iter().find(|n| n.eq_ignore_ascii_case(s));
+            sep.plate = Some(process.map_or_else(|| s.clone(), str::to_string));
+            on = true;
+        }
+        Some(Value::Null) => {
+            sep.plate = None;
+            on = false;
+        }
+        Some(v) => return Err(format!("`plate`: an ink name, \"all\" or null, not {v}")),
+        None => {}
+    }
+    match p.get("inkLimit") {
+        Some(Value::Null) => sep.ink_limit = None,
+        Some(v) => {
+            let l = v.as_f64().filter(|l| l.is_finite() && *l >= 0.0).ok_or_else(|| format!("`inkLimit`: a percentage, not {v}"))?;
+            sep.ink_limit = Some(l as f32);
+            on = true;
+        }
+        None => {}
+    }
+    on |= sep.ink_limit.is_some();
+    if let Some(v) = p.get("on").and_then(Value::as_bool) {
+        on = v;
+    }
+    app.ui.separations = on.then_some(sep.clone());
+    let mut out = json!({"on": on, "plate": sep.plate.as_deref().unwrap_or("all"), "inkLimit": sep.ink_limit});
+    if on && app.session.active().is_some() {
+        match crate::separations::current_sheet(app) {
+            Ok(sheet) => {
+                if let Some(name) = &sep.plate
+                    && sheet.ink(name).is_none()
+                {
+                    out["warning"] = json!(format!("this spread prints no `{name}` plate"));
+                }
+                out["spread"] = json!(sheet.spread);
+                out["dpi"] = json!(sheet.plates.dpi);
+                out["inks"] = sheet.inks().into_iter().map(|(name, spot)| json!({"name": name, "spot": spot})).collect();
+            }
+            Err(e) => out["error"] = json!(e),
+        }
+    }
+    Ok(out)
+}
+
 /// File › Export PDF…: ask for a path, export through `file.exportPdf` and write the bytes with the
 /// platform writer (a download on the web).
 pub(crate) fn export_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
@@ -2246,59 +2339,29 @@ pub fn default_shortcut(id: &str) -> Option<&'static str> {
     designcraft_engine::find_command(id).and_then(|c| c.shortcut).or_else(|| ui_label(id).and_then(|(_, s)| s))
 }
 
-/// The shortcut in effect for a command (the user's, else the default).
+/// The shortcut in effect for a command (the user's, else the default), as stored ("Cmd+Alt+K").
 pub fn shortcut_of(app: &DesignApp, id: &str) -> Option<String> {
-    match app.ui.shortcuts.get(id) {
-        Some(s) if s.is_empty() => None,
-        Some(s) => Some(s.clone()),
-        None => default_shortcut(id).map(str::to_string),
-    }
+    crate::keys::shortcut(&app.keymap, &craft_keymap::CommandRef::new(id))
 }
 
-/// Every command with a shortcut in effect: (id, shortcut). UI commands come first: where one
-/// shares keys with an engine command (⌘N, ⌘O…) it's the one with the dialog.
-pub fn effective_shortcuts(app: &DesignApp) -> Vec<(String, String)> {
-    UI_COMMANDS
-        .iter()
-        .map(|c| c.0)
-        .chain(designcraft_engine::command_specs().iter().map(|c| c.id))
-        .filter_map(|id| shortcut_of(app, id).map(|s| (id.to_string(), s)))
-        .collect()
+/// The shortcut a menu row shows: its own binding (a panel's), else its command's.
+pub fn shortcut_label(app: &DesignApp, id: &str, params: &Value) -> Option<String> {
+    let cmd = crate::keys::command_ref(id, params);
+    let cmd = if app.keymap.bindable(&cmd).is_some() { cmd } else { craft_keymap::CommandRef::new(id) };
+    crate::keys::shortcut_display(&app.keymap, &cmd)
 }
 
-/// A shortcut as written in this app ("Cmd+Alt+Shift+K") from a key press.
-pub fn shortcut_string(m: egui::Modifiers, key: egui::Key) -> String {
-    let mut s = String::new();
-    if m.command {
-        s += "Cmd+";
-    }
-    if m.alt {
-        s += "Alt+";
-    }
-    if m.shift {
-        s += "Shift+";
-    }
-    s += key.name();
-    s
+/// The shortcut of a tool, for its button's tooltip.
+pub fn tool_shortcut_label(app: &DesignApp, tool: &str) -> Option<String> {
+    crate::keys::shortcut_display(&app.keymap, &crate::keys::tool(tool))
 }
 
-/// A shortcut for display: ⌃⌥⇧⌘ order on macOS, Ctrl+Alt+Shift+ elsewhere.
+/// A shortcut for display: ⌃⌥⇧⌘K on macOS, Ctrl+Alt+Shift+K elsewhere.
 pub fn shortcut_text(sc: &str) -> String {
-    let mac = cfg!(target_os = "macos");
-    // The key is the last part ("Cmd+-" ends in an empty part before "-").
-    let (mods, key) = match sc.rsplit_once('+') {
-        Some((m, "")) => (m.trim_end_matches('+'), "+"),
-        Some((m, k)) => (m, k),
-        None => ("", sc),
-    };
-    let has = |m: &str| mods.split('+').any(|x| x == m);
-    let mut out = String::new();
-    for (m, sym, word) in [("Ctrl", "⌃", "Ctrl+"), ("Alt", "⌥", "Alt+"), ("Shift", "⇧", "Shift+"), ("Cmd", "⌘", "Ctrl+")] {
-        if has(m) && !(m == "Cmd" && !mac && has("Ctrl")) {
-            out += if mac { sym } else { word };
-        }
+    match craft_keymap::Binding::parse(sc) {
+        Ok(b) => b.trigger.display(crate::keys::platform()),
+        Err(_) => sc.to_string(),
     }
-    out + key
 }
 
 /// A menu entry, shared by the in-window menu bar and the native macOS menu.
@@ -2492,6 +2555,16 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
         "view.rulers" => app.ui.rulers,
         "view.frameEdges" => app.ui.frame_edges,
         "view.overprintPreview" => app.ui.overprint_preview,
+        "view.separations" => {
+            let sep = app.ui.separations.as_ref();
+            match (params.get("plate"), params.get("inkLimit")) {
+                (Some(Value::Null), _) => sep.is_none(),
+                (Some(Value::String(s)), _) if s == "all" => sep.is_some_and(|x| x.plate.is_none()),
+                (Some(Value::String(s)), _) => sep.and_then(|x| x.plate.as_deref()).is_some_and(|p| p.eq_ignore_ascii_case(s)),
+                (None, Some(v)) => sep.and_then(|x| x.ink_limit).is_some_and(|l| Some(f64::from(l)) == v.as_f64()),
+                _ => false,
+            }
+        }
         "view.fastDisplay" => app.ui.display_quality == designcraft_render::DisplayQuality::Fast,
         "view.typicalDisplay" => app.ui.display_quality == designcraft_render::DisplayQuality::Typical,
         "view.highQualityDisplay" => app.ui.display_quality == designcraft_render::DisplayQuality::High,
@@ -3066,8 +3139,8 @@ fn menu_items(app: &mut DesignApp, ui: &mut egui::Ui, items: &[Item], path: &str
                     None => label.to_owned(),
                 };
                 let mut b = egui::Button::new(crate::rtl::widget(ui, text));
-                if let Some(sc) = shortcut_of(app, id) {
-                    b = b.shortcut_text(shortcut_text(&sc));
+                if let Some(sc) = shortcut_label(app, id, params) {
+                    b = b.shortcut_text(sc);
                 }
                 if ui.add_enabled(menu_enabled(app, id), b).clicked() {
                     activate(app, id, params);
@@ -3146,78 +3219,45 @@ pub fn all_menu_items() -> Vec<(String, String)> {
     out
 }
 
-pub(crate) fn parse_shortcut(sc: &str) -> Option<(egui::Modifiers, egui::Key)> {
-    let mut m = egui::Modifiers::NONE;
-    let mut key = None;
-    for part in sc.split('+').filter(|s| !s.is_empty()) {
-        match part {
-            "Cmd" => m.command = true,
-            "Shift" => m.shift = true,
-            "Alt" => m.alt = true,
-            "Ctrl" => m.ctrl = true,
-            "=" => key = Some(egui::Key::Equals),
-            "-" => key = Some(egui::Key::Minus),
-            "[" => key = Some(egui::Key::OpenBracket),
-            "]" => key = Some(egui::Key::CloseBracket),
-            ";" => key = Some(egui::Key::Semicolon),
-            "'" => key = Some(egui::Key::Quote),
-            "," => key = Some(egui::Key::Comma),
-            "." => key = Some(egui::Key::Period),
-            "\\" => key = Some(egui::Key::Backslash),
-            "/" => key = Some(egui::Key::Slash),
-            "Delete" => key = Some(egui::Key::Delete),
-            k => key = egui::Key::from_name(k),
-        }
-    }
-    if sc.ends_with("+-") || sc == "-" {
-        key = Some(egui::Key::Minus);
-    }
-    key.map(|k| (m, k))
-}
-
-/// Whether a key press matches a parsed shortcut `m`+`k`: `None` when it doesn't, `Some(true)` for
-/// the shortcut's own key and modifiers, `Some(false)` for the Plus key standing in for `=`. On
-/// layouts with a dedicated + key (German) or Shift+= (US), Cmd+= arrives as Plus.
-fn key_matches(m: egui::Modifiers, k: egui::Key, key: egui::Key, modifiers: egui::Modifiers) -> Option<bool> {
-    let plus_for_equals = key == egui::Key::Plus;
-    let matches = (k == key || (plus_for_equals && k == egui::Key::Equals))
-        && m.command == modifiers.command
-        && (m.shift == modifiers.shift || (plus_for_equals && !m.shift))
-        && m.alt == modifiers.alt;
-    matches.then_some(k == key && m.shift == modifiers.shift)
-}
-
 /// The command a paste event stands for besides plain Paste. egui-winit turns every ⌘+V chord into
-/// `Event::Paste` with the clipboard's text and drops the key press, so the shortcut table never
-/// sees Paste in Place's chord; the modifiers held when it went down tell them apart. `None` when
-/// the chord is another one, or the native menu's accelerator takes it.
+/// `Event::Paste` with the clipboard's text and drops the key press, and the keymap reads the chord
+/// from the frame's final modifiers, which miss a chord released within the frame; the modifiers
+/// held when it went down tell them apart. `None` when the chord is another one, or the native
+/// menu's accelerator takes it.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn paste_chord_command(app: &DesignApp, modifiers: egui::Modifiers) -> Option<&'static str> {
     let id = "edit.pasteInPlace";
-    if app.native_menu && !app.ui.shortcuts.contains_key(id) {
+    if app.native_menu && app.keymap.overrides().get(id).is_none() {
         return None;
     }
-    let (m, k) = shortcut_of(app, id).as_deref().and_then(parse_shortcut)?;
-    (k == egui::Key::V && key_matches(m, k, egui::Key::V, modifiers) == Some(true)).then_some(id)
+    let platform = app.keymap.platform();
+    let held = craft_keymap::Mods::from_egui(&modifiers, platform);
+    let pressed = craft_keymap::Chord::new(held, craft_keymap::Key::V);
+    // A shortcut the user set is the menu bar's key equivalent once the bar carries it.
+    let on_bar = app
+        .native_shortcuts
+        .get(id)
+        .and_then(|sc| craft_keymap::Binding::parse(sc).ok())
+        .is_some_and(|b| !b.trigger.double && b.trigger.chord.effective(platform) == pressed);
+    if app.native_menu && on_bar {
+        return None;
+    }
+    let bound =
+        app.keymap.bindings(&craft_keymap::CommandRef::new(id)).iter().any(|b| !b.trigger.double && b.trigger.chord.effective(platform) == pressed);
+    bound.then_some(id)
 }
 
-/// Global keyboard shortcuts: menu commands and single-key tool shortcuts.
+/// Global keyboard shortcuts: menu commands, panels and tools, through the keymap.
 pub fn shortcuts(app: &mut DesignApp, ctx: &egui::Context) {
+    app.sync_keymap();
     // Only a focused text field takes the keys: the canvas (or a button) having focus after a click
     // must not swallow tool shortcuts until Esc clears it.
     if ctx.text_edit_focused() || keys_taken(app, ctx) {
         return;
     }
     let typing = app.session.wants_text();
-    let events = ctx.input(|i| i.events.clone());
-    for e in events {
-        let egui::Event::Key { key, pressed: true, modifiers, repeat: false, .. } = e else { continue };
-        if !shortcut_key(app, key, modifiers, typing, &mut || {
-            ctx.input_mut(|i| i.consume_key(modifiers, key));
-        }) {
-            escape_to_selection(app, key, modifiers, typing);
-        }
-    }
+    let keys = ctx.input_mut(|i| take_keys(app, i, typing));
+    run_keys(app, keys, typing);
 }
 
 /// Keys that a floating panel in its own OS window left over (craft-ui's
@@ -3229,24 +3269,16 @@ pub fn forwarded_shortcuts(app: &mut DesignApp, ctx: &egui::Context, events: Vec
     if events.is_empty() || keys_taken(app, ctx) {
         return;
     }
+    app.sync_keymap();
     let typing = app.session.wants_text();
-    let mut rest = Vec::with_capacity(events.len());
-    let mut escape = None;
-    for e in events {
-        if let egui::Event::Key { key, pressed: true, modifiers, repeat: false, .. } = e {
-            if shortcut_key(app, key, modifiers, typing, &mut || {}) {
-                continue;
-            }
-            if key == egui::Key::Escape {
-                escape = Some(modifiers);
-            }
-        }
-        rest.push(e);
-    }
-    crate::canvas::forwarded_keys(app, rest, modifiers);
-    if let Some(m) = escape {
-        escape_to_selection(app, egui::Key::Escape, m, typing);
-    }
+    // The keymap dispatches from an input state: the main window's, with the floating window's
+    // keys and modifiers in place of its own.
+    let mut input = ctx.input(|i| i.clone());
+    input.events = events;
+    input.modifiers = modifiers;
+    let keys = take_keys(app, &mut input, typing);
+    run_keys(app, keys, typing);
+    crate::canvas::forwarded_keys(app, input.events, modifiers);
 }
 
 /// Whether something other than the shortcuts has the keyboard: a dialog or Quick Apply, an input
@@ -3260,96 +3292,106 @@ fn keys_taken(app: &DesignApp, ctx: &egui::Context) -> bool {
         || crate::chrome::search_had_focus(ctx)
 }
 
-/// The command whose shortcut `key` with `modifiers` stands for, and whether the modifiers match
-/// that shortcut exactly.
-fn command_shortcut(app: &DesignApp, key: egui::Key, modifiers: egui::Modifiers, typing: bool) -> Option<(String, bool)> {
-    for (id, sc) in &effective_shortcuts(app) {
-        let id = id.as_str();
-        if let Some((m, k)) = parse_shortcut(sc)
-            && let Some(exact) = key_matches(m, k, key, modifiers)
-            && (m.command || m.alt || !typing)
-            && !(id == "edit.clear" && typing)
+/// The key presses [`take_keys`] took from an input, run by [`run_keys`] once the input is
+/// released: commands may read the context.
+struct Keys {
+    /// Presentation keys in order: `None` leaves Presentation, `Some(step)` moves through the spreads.
+    presentation: Vec<Option<isize>>,
+    hits: Vec<craft_keymap::egui::Hit>,
+    /// An Esc press that nothing took.
+    escape: bool,
+}
+
+/// Takes the presentation keys and the command, panel and tool shortcuts out of `input`'s key
+/// presses.
+fn take_keys(app: &mut DesignApp, input: &mut egui::InputState, typing: bool) -> Keys {
+    let presentation = if app.ui.screen_mode == ScreenMode::Presentation { presentation_keys(input) } else { Vec::new() };
+    let contexts: &[&str] = if typing { &[crate::keys::TEXT_CONTEXT] } else { &[] };
+    let active = craft_keymap::Active { panel: None, contexts, typing };
+    let native = &app.native_shortcuts;
+    // Presses the dispatcher leaves alone: Clear (the active tool deletes) and the keys the
+    // native menu's accelerators already handled. An item holds one key equivalent, its
+    // command's first shortcut in effect, and fires only for it exactly: the Plus key standing
+    // in for = never reaches it, and a command's other bindings run here.
+    // Copy, Cut and Paste stay too (the dispatcher's default): the canvas and text tools
+    // handle them, and Paste carries the text.
+    let accept = |hit: &craft_keymap::egui::Hit| {
+        let c = &hit.command;
+        let on_bar =
+            || c.params.is_null() && native.get(&c.id).and_then(|sc| craft_keymap::Binding::parse(sc).ok()).is_some_and(|b| b.trigger == hit.trigger);
+        let leave = hit.exact && hit.cycle.is_empty() && (c.id == "edit.clear" || on_bar());
+        !leave
+    };
+    let hits = app.key_dispatcher.dispatch_filtered(input, &app.keymap, &active, accept);
+    let escape = input.events.iter().any(
+        |e| matches!(e, egui::Event::Key { key: egui::Key::Escape, pressed: true, repeat: false, modifiers, .. } if !modifiers.command && !modifiers.alt),
+    );
+    Keys { presentation, hits, escape }
+}
+
+/// Runs what [`take_keys`] took, then Esc's return to the Selection tool.
+fn run_keys(app: &mut DesignApp, keys: Keys, typing: bool) {
+    for step in keys.presentation {
+        match step {
+            None => {
+                let _ = app.run("view.togglePresentation", json!({}));
+            }
+            Some(step) => crate::canvas::step_spread(app, step),
+        }
+    }
+    for hit in keys.hits {
+        if !hit.cycle.is_empty() {
+            // Tools sharing a key: the press after the group's current tool selects the next one.
+            let current = app.session.tool_id();
+            let tools: Vec<&str> = hit.cycle.iter().filter_map(|c| c.params.get("tool").and_then(Value::as_str)).collect();
+            let next = tools.iter().position(|t| *t == current).and_then(|i| tools.get((i + 1) % tools.len())).or(tools.first());
+            if let Some(tool) = next.map(|t| t.to_string()) {
+                log::debug!("tool shortcut -> {tool}");
+                app.select_tool(&tool);
+            }
+        } else if hit.command.id == crate::keys::TOOL_COMMAND
+            && let Some(tool) = hit.command.params.get("tool").and_then(Value::as_str).map(str::to_string)
         {
-            // Single-key shortcuts (W) only when not typing.
-            if !m.command && !m.alt && !m.shift && typing {
-                continue;
-            }
-            if id == "edit.clear" || (typing && matches!(id, "edit.copy" | "edit.cut" | "edit.paste" | "edit.pasteInPlace")) {
-                continue; // Handled by the active tool / text clipboard events.
-            }
-            return Some((id.to_string(), exact));
+            log::debug!("tool shortcut -> {tool}");
+            app.select_tool(&tool);
+        } else {
+            // Like choosing the menu item: "…" commands open their dialog.
+            activate(app, &hit.command.id, &hit.command.params);
         }
     }
-    None
-}
-
-/// Runs the presentation key, command shortcut or tool shortcut a key press stands for. `consume`
-/// takes the press from the input where nothing else may see it. Returns whether the press was used.
-fn shortcut_key(app: &mut DesignApp, key: egui::Key, modifiers: egui::Modifiers, typing: bool, consume: &mut dyn FnMut()) -> bool {
-    // Presentation hides every control, so Esc always leaves it, and only that: the canvas must
-    // not also see the press and switch tools or deselect.
-    if key == egui::Key::Escape && app.ui.screen_mode == ScreenMode::Presentation {
-        consume();
-        let _ = app.run("view.togglePresentation", json!({}));
-        return true;
-    }
-    // Presentation goes through the spreads with the arrow keys, Page Up/Down, Home and End.
-    if app.ui.screen_mode == ScreenMode::Presentation && !modifiers.command && !modifiers.alt {
-        let step = match key {
-            egui::Key::ArrowRight | egui::Key::ArrowDown | egui::Key::PageDown => Some(1),
-            egui::Key::ArrowLeft | egui::Key::ArrowUp | egui::Key::PageUp => Some(-1),
-            egui::Key::Home => Some(isize::MIN),
-            egui::Key::End => Some(isize::MAX),
-            _ => None,
-        };
-        if let Some(step) = step {
-            consume();
-            crate::canvas::step_spread(app, step);
-            return true;
-        }
-    }
-    if let Some((id, exact)) = command_shortcut(app, key, modifiers, typing) {
-        // The native menu bar carries the shortcuts in effect, the user's included, and its
-        // accelerator fires only for the shortcut's own key and modifiers; the Plus key standing
-        // in for = never reaches it.
-        if exact && app.native_shortcuts.contains(&id) {
-            return true; // The native menu handles it.
-        }
-        // The key press belongs to the shortcut: what it opens (Quick Apply's list, a dialog's
-        // default button) must not see the same press as Enter or Space this frame.
-        consume();
-        // Like choosing the menu item: "…" commands open their dialog.
-        activate(app, &id, &Value::Null);
-        return true;
-    }
-    // Tool shortcuts (single keys, Shift+key).
-    if !typing && !modifiers.command && !modifiers.alt {
-        let name = key.name();
-        let sc = if modifiers.shift { format!("Shift+{name}") } else { name.to_string() };
-        if let Some(tool) = designcraft_tools::tool_for_shortcut(&sc) {
-            log::debug!("tool shortcut {sc} -> {tool}");
-            if std::env::var_os("DESIGNCRAFT_DEBUG_KEYS").is_some() {
-                eprintln!("tool shortcut {sc} ({key:?}, {modifiers:?}) -> {tool}");
-            }
-            app.select_tool(tool);
-            return true;
-        }
-    }
-    false
-}
-
-/// Esc with no shortcut of its own goes back to the Selection tool.
-fn escape_to_selection(app: &mut DesignApp, key: egui::Key, modifiers: egui::Modifiers, typing: bool) {
-    if key == egui::Key::Escape
-        && !typing
-        && !modifiers.command
-        && !modifiers.alt
-        && app.session.tool_id() != "selection"
-        && !app.session.tool_busy()
-        && app.ui.flyout.is_none()
-    {
+    // Esc with no shortcut of its own goes back to the Selection tool.
+    if keys.escape && !typing && app.session.tool_id() != "selection" && !app.session.tool_busy() && app.ui.flyout.is_none() {
         app.select_tool("selection");
     }
+}
+
+/// Takes the Presentation keys out of `input`. Presentation hides every control, so Esc always
+/// leaves it, and only that: the canvas must not also see the press and switch tools or deselect.
+/// The arrow keys, Page Up/Down, Home and End go through the spreads.
+fn presentation_keys(input: &mut egui::InputState) -> Vec<Option<isize>> {
+    let mut steps = Vec::new();
+    for e in input.events.clone() {
+        let egui::Event::Key { key, pressed: true, modifiers, repeat: false, .. } = e else { continue };
+        if key == egui::Key::Escape {
+            input.consume_key(modifiers, key);
+            steps.push(None);
+            continue;
+        }
+        if !modifiers.command && !modifiers.alt {
+            let step = match key {
+                egui::Key::ArrowRight | egui::Key::ArrowDown | egui::Key::PageDown => Some(1),
+                egui::Key::ArrowLeft | egui::Key::ArrowUp | egui::Key::PageUp => Some(-1),
+                egui::Key::Home => Some(isize::MIN),
+                egui::Key::End => Some(isize::MAX),
+                _ => None,
+            };
+            if let Some(step) = step {
+                input.consume_key(modifiers, key);
+                steps.push(Some(step));
+            }
+        }
+    }
+    steps
 }
 
 /// Quick Apply (⌘Return): the document's styles and every command, searched by name.
@@ -3771,6 +3813,35 @@ mod tests {
         assert_eq!(r["zone"], 0.0, "a negative zone turns snapping off");
     }
 
+    /// Every command with a shortcut in effect: (command key, shortcut), in dispatch order. UI
+    /// commands come first: where one shares keys with an engine command (⌘N, ⌘O…) it's the one
+    /// with the dialog.
+    fn effective_shortcuts(app: &DesignApp) -> Vec<(String, String)> {
+        app.keymap.catalog().iter().filter_map(|b| crate::keys::shortcut(&app.keymap, &b.command).map(|s| (b.command.key(), s))).collect()
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn shortcut_edits_wait_for_the_dialog_and_the_menu_bar_owns_its_paste_chord() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        crate::shortcuts_dialog::open(&mut app, None);
+        for (id, p) in [
+            ("window.setShortcut", json!({"id": "app.palette", "shortcut": "F2"})),
+            ("window.resetShortcuts", json!({})),
+            ("window.importShortcuts", json!({"text": ""})),
+        ] {
+            assert!(run_ui(&mut app, id, &p).unwrap().is_err(), "{id} while the dialog is open");
+        }
+        crate::shortcuts_dialog::close(&mut app, false).unwrap();
+        // A chord of the user's: the default one is the bar's from the start.
+        run_ui(&mut app, "window.setShortcut", &json!({"id": "edit.pasteInPlace", "shortcut": "Cmd+Alt+V", "steal": true})).unwrap().unwrap();
+        let held = egui::Modifiers::COMMAND | egui::Modifiers::ALT;
+        app.native_menu = true;
+        assert_eq!(paste_chord_command(&app, held), Some("edit.pasteInPlace"), "before the bar carries it");
+        app.native_shortcuts.insert("edit.pasteInPlace".into(), "Cmd+Alt+V".into());
+        assert_eq!(paste_chord_command(&app, held), None, "the bar's key equivalent runs it, once");
+    }
+
     #[test]
     fn custom_shortcuts_override_defaults() {
         let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -3788,14 +3859,81 @@ mod tests {
         // ⌘N is the New Document dialog, not a bare file.new.
         let first_cmd_n = effective_shortcuts(&app).into_iter().find(|(_, s)| s == "Cmd+N").map(|(i, _)| i);
         assert_eq!(first_cmd_n.as_deref(), Some("app.newDocumentDialog"));
-        assert_eq!(shortcut_of(&app, "app.palette").as_deref(), Some("Cmd+Return"));
-        assert_eq!(shortcut_string(egui::Modifiers { command: true, shift: true, ..Default::default() }, egui::Key::K), "Cmd+Shift+K");
+        assert_eq!(shortcut_of(&app, "app.palette").as_deref(), Some("Cmd+Enter"));
+        assert_eq!(
+            crate::keys::chord_text(egui::Modifiers { command: true, shift: true, ..Default::default() }, egui::Key::K).as_deref(),
+            Some("Cmd+Shift+K")
+        );
         if cfg!(target_os = "macos") {
             assert_eq!(shortcut_text("Cmd+Alt+3"), "⌥⌘3");
             assert_eq!(shortcut_text("Cmd+Shift+."), "⇧⌘.");
         } else {
-            assert_eq!(shortcut_text("Cmd+Alt+3"), "Alt+Ctrl+3");
+            assert_eq!(shortcut_text("Cmd+Alt+3"), "Ctrl+Alt+3");
         }
+    }
+
+    /// One frame of key presses through the shortcut dispatcher.
+    fn press_keys(app: &mut crate::DesignApp, ctx: &egui::Context, keys: &[(egui::Key, egui::Modifiers)]) {
+        let events = keys
+            .iter()
+            .flat_map(|&(key, modifiers)| {
+                [true, false].map(|pressed| egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers })
+            })
+            .collect();
+        ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| shortcuts(app, &ui.ctx().clone())).textures_delta.clear();
+    }
+
+    #[test]
+    fn shortcuts_saved_as_a_map_by_older_versions_load_unchanged() {
+        let saved = br#"{"shortcuts": {"app.preferences": "Cmd+Alt+Shift+9", "app.palette": "", "file.close": [""]}}"#;
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.ui = crate::UiState::from_preferences_json(saved).unwrap();
+        app.sync_keymap();
+        assert_eq!(shortcut_of(&app, "app.preferences").as_deref(), Some("Cmd+Alt+Shift+9"));
+        assert_eq!(shortcut_of(&app, "app.palette"), None, "a removed default stays removed");
+        assert_eq!(shortcut_of(&app, "file.close"), None);
+        assert_eq!(shortcut_of(&app, "app.save").as_deref(), Some("Cmd+S"));
+        // Saved again it reads back the same, in the map form an older version reads.
+        let resaved = serde_json::to_vec(&app.ui).unwrap();
+        assert_eq!(crate::UiState::from_preferences_json(&resaved).unwrap().shortcuts, app.ui.shortcuts);
+        let saved: Value = serde_json::from_slice(&resaved).unwrap();
+        assert_eq!(saved["shortcuts"], json!({"app.preferences": "Cmd+Alt+Shift+9", "app.palette": "", "file.close": ""}));
+    }
+
+    #[test]
+    fn panel_shortcuts_open_their_panels() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({})).unwrap();
+        let ctx = egui::Context::default();
+        let shown = |app: &crate::DesignApp, p: &str| crate::panel_docking::showing(app, p);
+        assert!(!shown(&app, "layers"));
+        press_keys(&mut app, &ctx, &[(egui::Key::F7, egui::Modifiers::NONE)]);
+        assert!(shown(&app, "layers"), "F7 opens Layers");
+        // A panel without a default key takes one.
+        let r = run_ui(&mut app, "window.setShortcut", &json!({"id": "window.panel", "params": {"panel": "links"}, "shortcut": "Shift+F12"}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(r["shortcut"], "Shift+F12");
+        press_keys(&mut app, &ctx, &[(egui::Key::F12, egui::Modifiers::SHIFT)]);
+        assert!(shown(&app, "links"), "the new key opens Links");
+    }
+
+    #[test]
+    fn a_reassigned_tool_key_selects_the_tool_and_the_old_key_does_not() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({})).unwrap();
+        let ctx = egui::Context::default();
+        let none = egui::Modifiers::NONE;
+        run_ui(&mut app, "window.setShortcut", &json!({"id": "pen", "shortcut": "Y"})).unwrap().unwrap();
+        press_keys(&mut app, &ctx, &[(egui::Key::P, none)]);
+        assert_eq!(app.session.tool_id(), "selection", "P no longer selects the Pen");
+        press_keys(&mut app, &ctx, &[(egui::Key::Y, none)]);
+        assert_eq!(app.session.tool_id(), "pen");
+        // Tools sharing a key take turns.
+        press_keys(&mut app, &ctx, &[(egui::Key::B, none)]);
+        assert_eq!(app.session.tool_id(), "contentCollector");
+        press_keys(&mut app, &ctx, &[(egui::Key::B, none)]);
+        assert_eq!(app.session.tool_id(), "contentPlacer");
     }
 
     #[test]
@@ -4945,7 +5083,7 @@ mod tests {
         }
         // With a native menu (macOS) its accelerator takes Cmd+= itself, but never sees the Plus key
         // standing in for = (#781).
-        app.native_shortcuts.insert("view.zoomIn".to_string());
+        app.native_shortcuts.insert("view.zoomIn".to_string(), shortcut_of(&app, "view.zoomIn").unwrap());
         for (k, m, zooms_in) in [
             (egui::Key::Plus, egui::Modifiers::COMMAND, true),
             (egui::Key::Plus, egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, true),
@@ -4960,16 +5098,23 @@ mod tests {
         // A shortcut the user set runs here until the native menu bar carries it as its key
         // equivalent; then only the bar runs it, once.
         run_ui(&mut app, "window.setShortcut", &json!({"id": "view.zoomOut", "shortcut": "Cmd+9"})).unwrap().unwrap();
-        for (native, zooms_out) in [(false, true), (true, false)] {
-            if native {
-                app.native_shortcuts.insert("view.zoomOut".to_string());
-            }
+        let zooms_out = |app: &mut crate::DesignApp, k: egui::Key| {
             let z0 = app.view().unwrap().zoom;
-            frame(&mut app, key(egui::Key::Num9, egui::Modifiers::COMMAND));
-            frame(&mut app, vec![]);
-            let z = app.view().unwrap().zoom;
-            assert_eq!(z < z0, zooms_out, "native {native}: {z0} -> {z}");
-        }
+            frame(app, key(k, egui::Modifiers::COMMAND));
+            frame(app, vec![]);
+            app.view().unwrap().zoom < z0
+        };
+        assert!(zooms_out(&mut app, egui::Key::Num9), "no native bar: the app runs it");
+        app.native_shortcuts.insert("view.zoomOut".to_string(), "Cmd+9".to_string());
+        assert!(!zooms_out(&mut app, egui::Key::Num9), "the bar's key equivalent runs only there");
+        // A second binding of a command whose first the bar holds runs here.
+        let cmd = craft_keymap::CommandRef::new("view.zoomOut");
+        let bindings = ["Cmd+F11", "Cmd+9"].map(|s| craft_keymap::Binding::parse(s).unwrap()).to_vec();
+        app.keymap.set_bindings(&cmd, bindings, craft_keymap::Policy::Steal).unwrap();
+        app.ui.shortcuts = app.keymap.overrides().clone();
+        app.native_shortcuts.insert("view.zoomOut".to_string(), "Cmd+F11".to_string());
+        assert!(!zooms_out(&mut app, egui::Key::F11), "the bar runs its own key");
+        assert!(zooms_out(&mut app, egui::Key::Num9), "the second binding runs in the app");
     }
 
     #[test]
@@ -5417,7 +5562,7 @@ mod tests {
             app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 700.0)));
             app.run("file.new", json!({"pages": 2})).unwrap();
             app.session.prefs.recent_files.push("/nowhere/recent.dcraft".into());
-            app.ui.shortcuts.insert("view.rulers".into(), "Ctrl+Alt+R".into());
+            app.ui.shortcuts.insert("view.rulers", vec!["Ctrl+Alt+R".into()]);
             app.ui.hidden_menu_items.push("view.guides".into());
             app.ui.ui_scale = 1.25;
             app.ui.brightness = crate::theme::Brightness::Light;

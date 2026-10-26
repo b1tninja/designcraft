@@ -506,13 +506,14 @@ pub fn specs() -> Vec<CommandSpec> {
         }),
         cmd!(query "ink.list", "Ink Manager", [], None, "{} → {allToProcess, inks: [{name, process: bool (printed as process), alias?}]} — the spot inks", has_doc, |s, _| {
             let d = &s.doc()?.doc;
+            let inks = designcraft_pdf::inks::ink_set(d);
             let inks: Vec<Value> = d
                 .swatches
                 .iter()
                 .filter(|w| matches!(w.value, designcraft_color::swatch::SwatchValue::Color { color_type: designcraft_color::swatch::ColorType::Spot, .. }))
                 .map(|w| {
                     let alias = d.inks.aliases.iter().find(|(a, _)| *a == w.name).map(|(_, t)| t.clone());
-                    json!({"name": w.name, "process": d.inks.resolve(&w.name).1, "alias": alias})
+                    json!({"name": w.name, "process": designcraft_pdf::inks::spot_output(d, &inks, &w.name).1, "alias": alias})
                 })
                 .collect();
             Ok(json!({"allToProcess": d.inks.all_to_process, "inks": inks}))
@@ -558,6 +559,13 @@ pub fn specs() -> Vec<CommandSpec> {
                         }
                         match alias {
                             Some(Value::String(to)) => {
+                                let mut set = designcraft_pdf::inks::ink_set(d);
+                                let ids = (set.lookup(name), set.lookup(&to));
+                                if let (Some(from), Some(target)) = ids
+                                    && !set.alias(from, target)
+                                {
+                                    return Err(bad("ink.options", format!("aliasing `{name}` to `{to}` would make a loop")));
+                                }
                                 d.inks.aliases.retain(|(a, _)| a != name);
                                 d.inks.aliases.push((name.clone(), to));
                             }
@@ -2852,9 +2860,10 @@ mod ink_tests {
         let l = s.execute("ink.list", &json!({})).unwrap();
         assert_eq!(l["inks"][0]["alias"], "Pantone B");
         let back = designcraft_idml::import_idml(&designcraft_idml::export_idml(&s.doc().unwrap().doc)).unwrap();
-        assert!(back.inks.resolve("Pantone A").1, "IDML ConvertToProcess");
+        assert!(designcraft_pdf::inks::spot_output(&back, &designcraft_pdf::inks::ink_set(&back), "Pantone A").1, "IDML ConvertToProcess");
         assert!(back.inks.aliases.iter().any(|(a, b)| a == "Pantone A" && b == "Pantone B"), "IDML AliasInkName");
         assert!(s.execute("ink.options", &json!({"ink": "[Black]", "toProcess": true})).is_err());
+        assert!(s.execute("ink.options", &json!({"ink": "Pantone B", "alias": "Pantone A"})).is_err(), "an alias loop is refused");
     }
 }
 

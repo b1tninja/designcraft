@@ -149,6 +149,7 @@ const TABLE: &[(&str, [&str; 5])] = &[
         ],
     ),
     ("Close", ["Schließen", "Fermer", "Cerrar", "閉じる", "关闭"]),
+    ("Dismiss", ["Ausblenden", "Ignorer", "Descartar", "閉じる", "关闭"]),
     ("Save", ["Speichern", "Enregistrer", "Guardar", "保存", "保存"]),
     ("Save As…", ["Speichern unter …", "Enregistrer sous…", "Guardar como…", "別名で保存…", "另存为…"]),
     ("Save a Copy…", ["Kopie speichern …", "Enregistrer une copie…", "Guardar una copia…", "コピーを保存…", "保存副本…"]),
@@ -5294,6 +5295,8 @@ mod tests {
             "the print job did not start",
             "the printer",
         ]);
+        // The Keyboard Shortcuts dialog's strings (craft-keymap) reach `tr` too.
+        keys.extend(crate::shortcuts_dialog::strings());
         keys
     }
 
