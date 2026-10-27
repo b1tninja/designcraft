@@ -179,7 +179,7 @@ pub(super) fn character_section(app: &mut DesignApp, ui: &mut Ui) {
         egui::FontId::proportional(11.5),
         t.text,
     );
-    if let Some(f) = crate::panels::font_popup(app, &resp, &menu, &fam) {
+    if let Some(f) = crate::panels::font_popup(app, ui, &resp, &menu, &fam) {
         crate::panels::apply_font(app, &f);
     }
     ui.add_space(1.0);

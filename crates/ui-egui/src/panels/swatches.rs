@@ -401,7 +401,7 @@ pub fn color_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         }
         ui.label(egui::RichText::new(&name).size(11.0).color(t.text_dim));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let combo = egui::ComboBox::from_id_salt("color_mode")
+            let combo = craft_ui::ComboBox::from_id_salt("color_mode")
                 .width(64.0)
                 .selected_text(match mode {
                     ColorMode::Cmyk => "CMYK",
@@ -741,7 +741,7 @@ pub fn gradient_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                     crate::widgets::caption_w(ui, crate::i18n::tr(&lang, "Type:"), 52.0);
                     let shown = if is_gradient { crate::i18n::tr(&lang, g.kind.label()) } else { "" };
                     let combo =
-                        egui::ComboBox::from_id_salt("grad_type").selected_text(crate::rtl::widget(ui, shown)).width(104.0).show_ui(ui, |ui| {
+                        craft_ui::ComboBox::from_id_salt("grad_type").selected_text(crate::rtl::widget(ui, shown)).width(104.0).show_ui(ui, |ui| {
                             for (k, v) in [("Linear", "linear"), ("Radial", "radial")] {
                                 if ui
                                     .selectable_label(is_gradient && g.kind.label() == k, crate::rtl::widget(ui, crate::i18n::tr(&lang, k)))

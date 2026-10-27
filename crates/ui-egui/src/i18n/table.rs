@@ -2300,6 +2300,16 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
         ],
     ),
     (
+        "Show/Hide Depth Ruler",
+        [
+            "Show/Hide Depth Ruler",
+            "Afficher/Masquer la règle de profondeur",
+            "Mostrar/ocultar regla de profundidad",
+            "Show/Hide Depth Ruler",
+            "显示/隐藏深度标尺",
+        ],
+    ),
+    (
         "Show/Hide Document Grid",
         [
             "Show/Hide Document Grid",

@@ -224,6 +224,7 @@ mod image_content_cache_tests {
             inks: crate::inks::ink_set(doc),
             doc,
             cache,
+            composed: HashMap::new(),
             opts,
             clip: Rect::ZERO,
             warnings: Vec::new(),

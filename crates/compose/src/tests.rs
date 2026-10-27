@@ -5703,14 +5703,27 @@ fn ruled(text: &str, rect: Rect, columns: u32, edit: impl FnOnce(&mut Document, 
     (d, fid, rules)
 }
 
+/// Returns the top of the first frame's top line (its ascent) and the bottom of its bottom line
+/// (its descent).
+fn text_extent(d: &Document, fid: ItemId) -> (f64, f64) {
+    let sid = d.item(fid).unwrap().text_frame().unwrap().story;
+    let cs = compose_story(d, sid, &ComposeOptions::default());
+    let lines = &cs.frames[0].lines;
+    assert!(!lines.is_empty());
+    let top = lines.iter().map(|l| l.baseline - l.ascent).fold(f64::INFINITY, f64::min);
+    let bottom = lines.iter().map(|l| l.baseline + l.descent).fold(f64::NEG_INFINITY, f64::max);
+    (top, bottom)
+}
+
 #[test]
 fn column_rules_sit_in_the_gutters_inside_the_insets() {
     // Two columns in 0..300 with 6 pt side insets: the gutter is centred on 150.
-    let (_, _, rules) = ruled("Text", Rect::new(0.0, 0.0, 300.0, 200.0), 2, |_, _| {});
+    let (d, fid, rules) = ruled("Text", Rect::new(0.0, 0.0, 300.0, 200.0), 2, |_, _| {});
     assert_eq!(rules.len(), 1, "{rules:?}");
     let r = rules[0];
     assert!((r.center().x - 150.0).abs() < 1e-9 && (r.width() - 2.0).abs() < 1e-9, "{r:?}");
-    assert!((r.y0 - 10.0).abs() < 1e-9 && (r.y1 - 180.0).abs() < 1e-9, "{r:?}");
+    let (top, bottom) = text_extent(&d, fid);
+    assert!((r.y0 - top).abs() < 1e-9 && (r.y1 - bottom).abs() < 1e-9, "{r:?} for the text {top}..{bottom}");
     // Three columns: one rule per gutter, each centred between its two columns.
     let (_, _, rules) = ruled("Text", Rect::new(0.0, 0.0, 300.0, 200.0), 3, |_, _| {});
     assert_eq!(rules.len(), 2, "{rules:?}");
@@ -5729,16 +5742,36 @@ fn column_rules_sit_in_the_gutters_inside_the_insets() {
     assert!(rules.is_empty());
 }
 
+/// Column rules run from the top line's ascent to the bottom line's descent: text that fills the
+/// top of a tall frame gets rules down to its bottom line, not to the bottom of the columns.
+#[test]
+fn column_rules_run_from_the_top_lines_ascent_to_the_bottom_lines_descent() {
+    let (d, fid, rules) = ruled(LOREM, Rect::new(0.0, 0.0, 300.0, 600.0), 2, |_, _| {});
+    let (top, bottom) = text_extent(&d, fid);
+    assert!(bottom < 300.0, "the text fills the top of the 10..580 columns: {top}..{bottom}");
+    assert_eq!(rules.len(), 1, "{rules:?}");
+    assert!((rules[0].y0 - top).abs() < 1e-9 && (rules[0].y1 - bottom).abs() < 1e-9, "{rules:?} for the text {top}..{bottom}");
+    // Without lines there is no rule.
+    let cols = [Rect::new(0.0, 0.0, 100.0, 50.0), Rect::new(110.0, 0.0, 200.0, 50.0)];
+    assert!(column_rule_rects(&cols, &[], &TextFrameOptions { column_rule_weight: 1.0, ..Default::default() }).is_empty());
+}
+
 #[test]
 fn column_rules_centre_on_unequal_gutters_and_ignore_bad_weights() {
     let cols = [Rect::new(200.0, 0.0, 300.0, 50.0), Rect::new(0.0, 0.0, 100.0, 50.0), Rect::new(110.0, 0.0, 180.0, 50.0)];
+    // One line in the first column, from 0 to 50.
+    let (d, sid, _) = doc_with("Text", Rect::new(0.0, 0.0, 100.0, 50.0), ParaAttrs::default());
+    let mut line = compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].clone();
+    (line.x0, line.x1, line.ascent, line.descent, line.baseline) = (0.0, 100.0, 40.0, 10.0, 40.0);
+    let lines = [line];
     let weight = |w: f64| TextFrameOptions { column_rule_weight: w, ..Default::default() };
-    let rules = column_rule_rects(&cols, &[], &weight(1.0));
+    let rules = column_rule_rects(&cols, &lines, &weight(1.0));
     let centres: Vec<f64> = rules.iter().map(|r| r.center().x).collect();
     assert_eq!(centres, [105.0, 190.0]);
-    assert!(column_rule_rects(&cols, &[], &weight(f64::NAN)).is_empty());
-    assert!(column_rule_rects(&cols, &[], &weight(-1.0)).is_empty());
-    assert!((column_rule_rects(&cols, &[], &weight(1e12))[0].width() - 1000.0).abs() < 1e-9);
+    assert!(rules.iter().all(|r| r.y0 == 0.0 && r.y1 == 50.0), "{rules:?}");
+    assert!(column_rule_rects(&cols, &lines, &weight(f64::NAN)).is_empty());
+    assert!(column_rule_rects(&cols, &lines, &weight(-1.0)).is_empty());
+    assert!((column_rule_rects(&cols, &lines, &weight(1e12))[0].width() - 1000.0).abs() < 1e-9);
 }
 
 #[test]
@@ -5751,9 +5784,12 @@ fn column_rules_in_right_to_left_and_vertical_frames() {
     // Vertical type: the columns stack top to bottom, so the rule runs across the frame.
     let (d, fid, rules) = ruled("縦書き", Rect::new(100.0, 100.0, 400.0, 300.0), 2, |d, sid| d.story_mut(sid).unwrap().vertical = true);
     assert_eq!(rules.len(), 1);
+    let (top, bottom) = text_extent(&d, fid);
+    assert!((rules[0].y0 - top).abs() < 1e-9 && (rules[0].y1 - bottom).abs() < 1e-9, "{rules:?} for the text {top}..{bottom}");
     let r = d.text_xf(d.item(fid).unwrap()).transform_rect_bbox(rules[0]);
-    // Text area: x 106..394, y 110..280; the gutter is centred on y 195.
-    assert!((r.x0 - 106.0).abs() < 1e-6 && (r.x1 - 394.0).abs() < 1e-6, "{r:?}");
+    // Text area: x 106..394, y 110..280; the gutter is centred on y 195, and the one line of
+    // text runs from the right edge, so the rule is as long as that line is deep.
+    assert!(r.x0 > 106.0 && (r.x1 - 394.0).abs() < 2.0 && (r.width() - (bottom - top)).abs() < 1e-6, "{r:?}");
     assert!((r.center().y - 195.0).abs() < 1e-6 && (r.height() - 2.0).abs() < 1e-6, "{r:?}");
 }
 
@@ -5772,13 +5808,15 @@ fn column_rules_break_around_paragraphs_that_span_columns() {
     for r in &rules {
         assert!(r.y1 <= top + 1e-9 || r.y0 >= bottom - 1e-9, "rule {r:?} cuts the span {top}..{bottom}");
     }
-    // The rule resumes below the span and runs to the bottom of the columns.
-    assert!(rules.iter().any(|r| (r.y0 - bottom).abs() < 1e-9 && (r.y1 - 380.0).abs() < 1e-9), "{rules:?}");
+    // The rule resumes below the span and runs to the bottom line's descent.
+    let (_, text_bottom) = text_extent(&d, fid);
+    assert!(text_bottom < 380.0 - 1.0, "the text ends above the columns' bottom: {text_bottom}");
+    assert!(rules.iter().any(|r| (r.y0 - bottom).abs() < 1e-9 && (r.y1 - text_bottom).abs() < 1e-9), "{rules:?}");
 }
 
 #[test]
 fn column_rules_take_their_offset_insets_and_tint() {
-    let (d, fid, rules) = ruled("Text", Rect::new(0.0, 0.0, 300.0, 200.0), 2, |d, sid| {
+    let (d, fid, rules) = ruled(LOREM, Rect::new(0.0, 0.0, 300.0, 200.0), 2, |d, sid| {
         let fid = d.story(sid).unwrap().frames[0];
         let o = &mut d.item_mut(fid).unwrap().text_frame_mut().unwrap().options;
         o.column_rule_offset = 3.0;
@@ -5786,13 +5824,22 @@ fn column_rules_take_their_offset_insets_and_tint() {
         o.column_rule_bottom_inset = 25.0;
         o.column_rule_tint = 0.4;
     });
-    // Gutter centre 150 moved 3 pt; columns 10..180 shortened to 25..155.
+    // Gutter centre 150 moved 3 pt; the text's extent shortened by 15 at the top and 25 at the
+    // bottom.
+    let (top, bottom) = text_extent(&d, fid);
     assert_eq!(rules.len(), 1, "{rules:?}");
     let r = rules[0];
-    assert!((r.center().x - 153.0).abs() < 1e-9 && (r.y0 - 25.0).abs() < 1e-9 && (r.y1 - 155.0).abs() < 1e-9, "{r:?}");
+    assert!((r.center().x - 153.0).abs() < 1e-9 && (r.y0 - (top + 15.0)).abs() < 1e-9 && (r.y1 - (bottom - 25.0)).abs() < 1e-9, "{r:?}");
     let sid = d.item(fid).unwrap().text_frame().unwrap().story;
     let cs = compose_story(&d, sid, &ComposeOptions::default());
     assert!(cs.frames[0].decos.iter().any(|dc| dc.rect == r && (dc.tint - 0.4).abs() < 1e-6));
+    // A negative inset extends the rule past the text.
+    let (d, fid, rules) = ruled(LOREM, Rect::new(0.0, 0.0, 300.0, 200.0), 2, |d, sid| {
+        let fid = d.story(sid).unwrap().frames[0];
+        d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.column_rule_top_inset = -4.0;
+    });
+    let (top, bottom) = text_extent(&d, fid);
+    assert!(rules.len() == 1 && (rules[0].y0 - (top - 4.0)).abs() < 1e-9 && (rules[0].y1 - bottom).abs() < 1e-9, "{rules:?}");
     // Insets that meet leave no rule.
     let (_, _, rules) = ruled("Text", Rect::new(0.0, 0.0, 300.0, 200.0), 2, |d, sid| {
         let fid = d.story(sid).unwrap().frames[0];

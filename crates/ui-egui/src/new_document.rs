@@ -771,14 +771,17 @@ fn details(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) {
     row(ui, rtl, |ui| {
         cell(ui, rtl, tr("Width"), |ui| spin(ui, d, "width", COLUMN_W - 8.0, Step::Measure(1.0)));
         cell(ui, rtl, tr("Units"), |ui| {
-            egui::ComboBox::from_id_salt("nd_units").selected_text(crate::rtl::widget(ui, tr(u.label()))).width(COLUMN_W - 8.0).show_ui(ui, |ui| {
-                // InDesign's eight; a preset in another unit keeps it on the list.
-                for v in NEW_DOCUMENT_UNITS.into_iter().chain((!NEW_DOCUMENT_UNITS.contains(&u)).then_some(u)) {
-                    if ui.selectable_label(v == u, crate::rtl::widget(ui, tr(v.label()))).clicked() && v != u {
-                        set_units(d, v);
+            craft_ui::ComboBox::from_id_salt("nd_units").selected_text(crate::rtl::widget(ui, tr(u.label()))).width(COLUMN_W - 8.0).show_ui(
+                ui,
+                |ui| {
+                    // InDesign's eight; a preset in another unit keeps it on the list.
+                    for v in NEW_DOCUMENT_UNITS.into_iter().chain((!NEW_DOCUMENT_UNITS.contains(&u)).then_some(u)) {
+                        if ui.selectable_label(v == u, crate::rtl::widget(ui, tr(v.label()))).clicked() && v != u {
+                            set_units(d, v);
+                        }
                     }
-                }
-            });
+                },
+            );
         });
     });
     row(ui, rtl, |ui| {

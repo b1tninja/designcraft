@@ -173,6 +173,7 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
         inks: crate::inks::ink_set(doc),
         doc,
         cache,
+        composed: HashMap::new(),
         opts,
         clip: Rect::ZERO,
         warnings,

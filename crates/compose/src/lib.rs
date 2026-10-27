@@ -2255,17 +2255,26 @@ fn mark_keep_violations(doc: &Document, story: &Story, out: &mut ComposedStory) 
 const MAX_COLUMN_RULE_WEIGHT: f64 = 1000.0;
 
 /// Text Frame Options › Column Rules: one bar per gutter, `column_rule_weight` wide, centred
-/// between the facing edges of the two columns and moved by `column_rule_offset`, from the
-/// columns' top to their bottom (the text area, inside the insets) shortened by the rule's top
-/// and bottom insets. Works in the composed space, so right-to-left and vertical frames (whose
-/// columns are laid out in the turned box) get their rules between the columns too.
+/// between the facing edges of the two columns and moved by `column_rule_offset`, from the top of
+/// the frame's top line (its ascent) to the bottom of its bottom line (its descent), as InDesign
+/// draws them, shortened by the rule's top and bottom insets (a negative inset extends it). Works
+/// in the composed space, so right-to-left and vertical frames (whose columns are laid out in the
+/// turned box) get their rules between the columns too.
 ///
 /// A paragraph that spans columns interrupts the rule: the bar stops at the top of its first line
-/// and resumes below its last line. Nothing is drawn for a single column or a weight that is not a
-/// positive finite number.
+/// and resumes below its last line. Nothing is drawn for a frame without lines, a single column or
+/// a weight that is not a positive finite number.
 pub fn column_rule_rects(columns: &[Rect], lines: &[Line], opts: &TextFrameOptions) -> Vec<Rect> {
     let weight = opts.column_rule_weight;
     if !weight.is_finite() || weight <= 0.0 || columns.len() < 2 {
+        return Vec::new();
+    }
+    let (text_top, text_bottom) = lines
+        .iter()
+        .map(|l| (l.baseline - l.ascent, l.baseline + l.descent))
+        .filter(|(t, z)| t.is_finite() && z.is_finite())
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(t, z), (lt, lz)| (t.min(lt), z.max(lz)));
+    if text_bottom < text_top {
         return Vec::new();
     }
     let finite = |v: f64| if v.is_finite() { v } else { 0.0 };
@@ -2279,7 +2288,7 @@ pub fn column_rule_rects(columns: &[Rect], lines: &[Line], opts: &TextFrameOptio
     for pair in cols.windows(2) {
         let [a, b] = [pair[0], pair[1]];
         let cx = (a.x1 + b.x0) / 2.0;
-        let (top, bottom) = (a.y0.max(b.y0) + top_inset, a.y1.min(b.y1) - bottom_inset);
+        let (top, bottom) = (text_top + top_inset, text_bottom - bottom_inset);
         if bottom <= top {
             continue;
         }

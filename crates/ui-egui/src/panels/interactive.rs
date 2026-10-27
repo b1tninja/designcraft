@@ -365,7 +365,7 @@ pub fn buttons(app: &mut DesignApp, ui: &mut egui::Ui) {
     let mut pick = None;
     ui.horizontal(|ui| {
         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "On Release"));
-        let combo = egui::ComboBox::from_id_salt("button_action")
+        let combo = craft_ui::ComboBox::from_id_salt("button_action")
             .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, labels.iter().find(|l| l.0 == kind).map_or("", |l| l.1))))
             .show_ui(ui, |ui| {
                 for (k, l) in labels {
@@ -426,7 +426,7 @@ pub fn buttons(app: &mut DesignApp, ui: &mut egui::Ui) {
     let cur = ff.as_ref().map(|f| f.kind);
     ui.horizontal(|ui| {
         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Form Field"));
-        let combo = egui::ComboBox::from_id_salt("form_kind")
+        let combo = craft_ui::ComboBox::from_id_salt("form_kind")
             .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, kinds.iter().find(|k| k.0 == cur).map_or("", |k| k.1))))
             .show_ui(ui, |ui| {
                 for (k, l) in kinds {
@@ -539,7 +539,7 @@ pub fn liquid(app: &mut DesignApp, ui: &mut egui::Ui) {
             crate::widgets::caption(ui, &format!("{} {}", crate::i18n::tr(&lang, "Page:"), d.page_name(page)));
         });
     });
-    let combo = egui::ComboBox::from_id_salt("liquid_rule")
+    let combo = craft_ui::ComboBox::from_id_salt("liquid_rule")
         .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&lang, liquid_rule_label(pg.liquid))))
         .width(190.0)
         .show_ui(ui, |ui| {
@@ -669,7 +669,7 @@ pub fn transitions(app: &mut DesignApp, ui: &mut egui::Ui) {
     use designcraft_doc::TransitionKind as K;
     crate::rtl::label(ui, egui::RichText::new(format!("{} {}", crate::i18n::tr(&app.ui.language, "Spread"), si + 1)).strong());
     let mut kind = cur.map(|c| c.kind);
-    let combo = egui::ComboBox::from_id_salt("transition_kind")
+    let combo = craft_ui::ComboBox::from_id_salt("transition_kind")
         .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, kind.map_or("None", K::label))))
         .show_ui(ui, |ui| {
             ui.selectable_value(&mut kind, None, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "None")));

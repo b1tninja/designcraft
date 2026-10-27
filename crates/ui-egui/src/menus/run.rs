@@ -590,6 +590,7 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         "view.textThreads" => flag(&mut app.ui.text_threads),
         "view.hiddenCharacters" => flag(&mut app.ui.hidden_characters),
         "view.taggedFrames" => flag(&mut app.ui.tagged_frames),
+        "view.storyEditorDepthRuler" => flag(&mut app.ui.story_editor_depth_ruler),
         "window.hidePanels" | "window.hidePanelsExceptTools" => {
             let mode = if id == "window.hidePanels" { 1 } else { 2 };
             app.ui.hidden_panels = if app.ui.hidden_panels == mode { 0 } else { mode };

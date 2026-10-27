@@ -4,6 +4,12 @@ use super::pipeline::{item_exported, layer_exported};
 use super::*;
 
 impl Exporter<'_> {
+    /// Story `sid` composed for `page` ([`Cache::get`]), asked of the cache once per export.
+    fn composed(&mut self, sid: designcraft_doc::StoryId, page: Option<usize>) -> Arc<designcraft_compose::ComposedStory> {
+        let (doc, cache) = (self.doc, self.cache);
+        self.composed.entry((sid, page)).or_insert_with(|| cache.get(doc, sid, page)).clone()
+    }
+
     /// The parent pages' items on `layer` shown on page `pi` of spread `si`: the parent's bases
     /// first, then the parent.
     fn parent_items(&mut self, s: &mut Surface, si: usize, pi: usize, page: &designcraft_doc::Page, layer: &designcraft_doc::Layer, first: usize) {
@@ -325,7 +331,7 @@ impl Exporter<'_> {
                 }
             }
             Content::Text(tfr) => {
-                let cs = self.cache.get(doc, tfr.story, page);
+                let cs = self.composed(tfr.story, page);
                 if let (Some(ft), Some(pt)) = (cs.frame(it.id), &tfr.options.path) {
                     // Type on a path: the glyphs as outlines along the path.
                     for (si, gp) in designcraft_compose::path_glyphs(&cs, ft, &bp, pt) {
@@ -381,7 +387,7 @@ impl Exporter<'_> {
             s.pop();
         }
         if let Content::Text(tfr) = &it.content {
-            let cs = self.cache.get(doc, tfr.story, page);
+            let cs = self.composed(tfr.story, page);
             if let Some(ft) = cs.frame(it.id) {
                 self.frame_objects(s, ft, xf * doc.text_local(it), page);
             }

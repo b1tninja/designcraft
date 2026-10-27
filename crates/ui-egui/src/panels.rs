@@ -3,7 +3,7 @@
 pub mod cell_stroke;
 pub mod conditions;
 mod font_menu;
-pub use font_menu::{FontPick, SAMPLES as FONT_SAMPLES, font_menu_body};
+pub use font_menu::{FONT_MENU_HEIGHT, FontMenu, FontPick, SAMPLES as FONT_SAMPLES, font_menu_header, font_menu_list};
 pub mod datamerge;
 pub mod glyphs;
 pub mod interactive;
@@ -383,7 +383,8 @@ pub fn swatch_picker(
     Some(resp)
 }
 
-/// A font family combo box showing `current` by its menu name, with [`font_menu_body`] as its menu.
+/// A font family combo box showing `current` by its menu name, with the Font menu
+/// ([`font_menu_header`]) as its menu.
 /// Returns the font picked.
 pub fn font_combo(
     app: &mut DesignApp,
@@ -394,15 +395,20 @@ pub fn font_combo(
 ) -> Option<FontPick> {
     let menu = font_menu(app);
     let shown = if current.is_empty() { "—".to_string() } else { font_label(app, &menu, current) };
-    // A field and a plain popup rather than egui's combo box: its own scroll area would keep the
-    // menu at the size it last had (a family opening, a filter clearing, wouldn't show).
     let field = ui.push_id(id_salt, |ui| crate::widgets::dropdown(ui, &shown, width)).inner;
-    font_popup(app, &field, &menu, current)
+    font_popup(app, ui, &field, &menu, current)
 }
 
-/// [`font_menu_body`] in a popup under `field` (a font field the caller draws), which screen
-/// readers hear as a combo box with the current family as its value. Returns the font picked.
-pub fn font_popup(app: &mut DesignApp, field: &egui::Response, menu: &[designcraft_fonts::FamilyInfo], current: &str) -> Option<FontPick> {
+/// The Font menu ([`font_menu_header`]) in a menu under `field` (a font field the caller draws in
+/// `ui`), which screen readers hear as a combo box with the current family as its value. Returns
+/// the font picked.
+pub fn font_popup(
+    app: &mut DesignApp,
+    ui: &egui::Ui,
+    field: &egui::Response,
+    menu: &[designcraft_fonts::FamilyInfo],
+    current: &str,
+) -> Option<FontPick> {
     let shown = if current.is_empty() { "—".to_string() } else { font_label(app, menu, current) };
     field.widget_info(|| {
         let mut info = egui::WidgetInfo::new(egui::Role::ComboBox);
@@ -411,10 +417,12 @@ pub fn font_popup(app: &mut DesignApp, field: &egui::Response, menu: &[designcra
         info.label = Some(crate::i18n::tr(&app.ui.language, "Font Family").to_owned());
         info
     });
-    egui::Popup::menu(field)
+    let width = field.rect.width();
+    craft_ui::combo::Menu::new(ui, field)
+        .height(FONT_MENU_HEIGHT)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-        .show(|ui| font_menu_body(app, ui, menu, current, field.rect.width()))
-        .and_then(|r| r.inner)
+        .show_ui_with_header(|ui| font_menu_header(app, ui, menu, current, width), font_menu_list)
+        .flatten()
 }
 
 /// The style a pick sets: the one picked, else the family's Regular (else its first).
@@ -454,7 +462,7 @@ pub fn style_shown(current: &str) -> String {
 pub fn font_style_picker(app: &mut DesignApp, ui: &mut egui::Ui, family: &str, current: &str, width: f32) {
     let styles = fonts(app).styles(family);
     let mut pick = None;
-    let combo = egui::ComboBox::from_id_salt("font_style").selected_text(style_shown(current)).width(width).show_ui(ui, |ui| {
+    let combo = craft_ui::ComboBox::from_id_salt("font_style").selected_text(style_shown(current)).width(width).show_ui(ui, |ui| {
         for s in &styles {
             if ui.selectable_label(s == current, s).clicked() {
                 pick = Some(s.clone());
@@ -472,7 +480,7 @@ pub fn para_style_picker(app: &mut DesignApp, ui: &mut egui::Ui, current: &str, 
     let mut pick = None;
     let shown = crate::i18n::style_name(&app.ui.language, current);
     let label = if overridden { format!("{shown}+") } else { shown.to_string() };
-    let combo = egui::ComboBox::from_id_salt("para_style").selected_text(crate::rtl::widget(ui, label)).width(width).show_ui(ui, |ui| {
+    let combo = craft_ui::ComboBox::from_id_salt("para_style").selected_text(crate::rtl::widget(ui, label)).width(width).show_ui(ui, |ui| {
         for n in names.iter().filter(|n| *n != designcraft_doc::NO_PARA_STYLE) {
             if ui.selectable_label(n == current, crate::rtl::widget(ui, crate::i18n::style_name(&app.ui.language, n))).clicked() {
                 pick = Some(n.clone());

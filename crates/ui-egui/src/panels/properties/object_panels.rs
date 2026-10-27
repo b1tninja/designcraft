@@ -66,7 +66,7 @@ pub fn stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             StrokeType::Style { name } => name.clone(),
             k => k.label().to_string(),
         };
-        let combo = egui::ComboBox::from_id_salt("stype")
+        let combo = craft_ui::ComboBox::from_id_salt("stype")
             .selected_text(crate::rtl::widget(
                 ui,
                 if matches!(st.kind, StrokeType::Style { .. }) { &shown } else { crate::i18n::tr(&app.ui.language, &shown) },
@@ -106,7 +106,7 @@ pub fn stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         ui.end_row();
         for (key, label, cur, flip) in [("start", "Start/End:", st.start, true), ("end", "", st.end, false)] {
             caption(ui, crate::i18n::tr(&app.ui.language, label));
-            let combo = egui::ComboBox::from_id_salt(key)
+            let combo = craft_ui::ComboBox::from_id_salt(key)
                 .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, cur.label())))
                 .width(140.0)
                 .show_ui(ui, |ui| {
@@ -305,7 +305,7 @@ fn wrap_combo(
     ui.horizontal(|ui| {
         caption(ui, crate::i18n::tr(&app.ui.language, caption_text));
         let shown = opts.iter().chain(shown_only).find(|o| o.0 == cur).map_or(cur, |o| o.1).to_string();
-        let combo = egui::ComboBox::from_id_salt(salt)
+        let combo = craft_ui::ComboBox::from_id_salt(salt)
             .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, &shown)))
             .width(170.0)
             .show_ui(ui, |ui| {
@@ -468,7 +468,7 @@ pub fn effects_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         B::Luminosity,
     ];
     ui.horizontal(|ui| {
-        let combo = egui::ComboBox::from_id_salt("blend")
+        let combo = craft_ui::ComboBox::from_id_salt("blend")
             .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, it.blend.label())))
             .width(130.0)
             .show_ui(ui, |ui| {

@@ -130,7 +130,7 @@ pub fn swatch_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                 if kind == "color" {
                     caption(ui, lang, "Color Type:");
                     let cur = d.s("colorType");
-                    let combo = egui::ComboBox::from_id_salt("swatch_color_type")
+                    let combo = craft_ui::ComboBox::from_id_salt("swatch_color_type")
                         .selected_text(crate::rtl::widget(ui, tr(lang, if cur == "spot" { "Spot" } else { "Process" })))
                         .show_ui(ui, |ui| {
                             for (v, l) in [("process", "Process"), ("spot", "Spot")] {
@@ -149,9 +149,9 @@ pub fn swatch_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                     "gray" => "Gray",
                     _ => "CMYK",
                 };
-                let combo = egui::ComboBox::from_id_salt("swatch_color_mode").selected_text(crate::rtl::widget(ui, tr(lang, label(&cur)))).show_ui(
-                    ui,
-                    |ui| {
+                let combo = craft_ui::ComboBox::from_id_salt("swatch_color_mode")
+                    .selected_text(crate::rtl::widget(ui, tr(lang, label(&cur))))
+                    .show_ui(ui, |ui| {
                         for m in ["cmyk", "rgb", "gray"] {
                             if ui.selectable_label(cur == m, crate::rtl::widget(ui, tr(lang, label(m)))).clicked()
                                 && cur != m
@@ -160,8 +160,7 @@ pub fn swatch_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                                 set_color(&mut d.fields, c, Some(m));
                             }
                         }
-                    },
-                );
+                    });
                 let _ = crate::widgets::name_combo(combo, tr(lang, "Color Mode"));
                 ui.end_row();
                 match d.s("mode").as_str() {
@@ -283,7 +282,7 @@ pub fn layer_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         ui.end_row();
         caption(ui, lang, "Color:");
         ui.horizontal(|ui| {
-            let combo = egui::ComboBox::from_id_salt("layer_color")
+            let combo = craft_ui::ComboBox::from_id_salt("layer_color")
                 .selected_text(crate::rtl::widget(ui, tr(lang, named.unwrap_or("Custom"))))
                 .width(140.0)
                 .show_ui(ui, |ui| {
