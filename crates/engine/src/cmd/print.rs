@@ -222,7 +222,7 @@ mod tests {
         s.execute("file.new", &json!({"pages": 4})).unwrap();
         // A fixed creation date: both exports would otherwise take the clock's second.
         let params = json!({"printer": "Office (east)", "copies": 2, "pages": "2-3", "marks": true, "bleed": true, "created": 1_700_000_000});
-        let expected = super::super::export::pdf_export(&s, &params).unwrap().bytes;
+        let expected = super::super::export::pdf_export_for(&s, &params, true).unwrap().bytes;
         let r = print_with(&mut s, &params, |pdf, job| {
             // The production export options and full bytes reach the shared spooler boundary.
             assert_eq!(pdf, expected);

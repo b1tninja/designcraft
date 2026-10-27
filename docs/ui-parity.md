@@ -16,7 +16,7 @@ basics of editing fail for too many users on Windows and Linux.
 | What | Value | How |
 |---|---|---|
 | InDesign 21.6 menu items matched (in scope) | 331 / 482 (69%) | script over the running app's menu dump; see target-app-parity.md |
-| Menu bar | 9 menus, 49 submenus, 340 items | `MENUS` in `crates/ui-egui/src/menus.rs` |
+| Menu bar | 9 menus, 49 submenus, 340 items | `MENUS` in `crates/ui-egui/src/menus/tables.rs` |
 | Commands | 446 engine (188 in menus) + 99 UI | `crates/engine/src/cmd/*`, `UI_COMMANDS` |
 | Theme colours | measured hex values of Medium Dark, 4 brightness themes + High Contrast | `theme::Tokens` vs `11-observed-ui.md` §1 |
 
@@ -35,7 +35,7 @@ basics of editing fail for too many users on Windows and Linux.
 | Overset mark (red + at the out port) | selected frame only | every overset frame, groups included, while frame edges show | ✓ | a deliberate step past InDesign: grouped labels that overflow were invisible until Preflight |
 | Smart guides, snapping to guides/grid/baseline | ✓ | ✓ (2,049-line `snap.rs`) | ~ | vertical smart spacing between two rectangles (#188) |
 | Nudging with arrows, Shift ×10 | ✓ | ✓ | ✓ | |
-| Document views: scrollbars (each split pane), Hand tool by Space, middle drag, or Alt while editing text | ✓ | ✓ | ✓ | `canvas.rs` `scrollbar_tests` |
+| Document views: scrollbars (each split pane), Hand tool by Space, middle drag, or Alt while editing text | ✓ | ✓ | ✓ | `canvas/scroll.rs` `scrollbar_tests` |
 | Gridify while drawing, Gap tool, Live Distribute | ✓ | ✓ | ✓ | |
 | Type tool: caret, selection, double/triple click, drag-and-drop text | ✓ | ✓ | ~ | formatting at a caret discarded (#289); text editing complaints (#23, #174) |
 | Threading: click out port, load text cursor, click frame | ✓ | ✗ ports drawn only; no thread/unthread command; Primary Text Frame and autoflow on Place | ✗ | **alpha blocker** (#352, #194, #165, #140) |
