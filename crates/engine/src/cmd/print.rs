@@ -57,14 +57,39 @@ pub struct PrintDocument {
 /// Export the active document as a print-ready PDF (see [`PrintDocument`]). Sends nothing.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn print_document(s: &mut Session, p: &Value) -> Result<PrintDocument> {
-    let mut pdf = print_pdf(s, p)?.bytes;
-    let d = &s.doc()?.doc;
-    if p.get("grayscale").and_then(Value::as_bool).unwrap_or(false) {
-        pdf = grayscale_pdf(&pdf, Some(&d.title))?;
+    print_snapshot(s, p)?.render()
+}
+
+/// What a print needs of the session, taken cheaply: the document (shared, not copied), the render
+/// cache (shared, internally locked) and the print settings. [`PrintSnapshot::render`] does the heavy
+/// work (PDF export, grayscale rendering) on any thread, so a host can keep it off the UI thread.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone)]
+pub struct PrintSnapshot {
+    doc: std::sync::Arc<designcraft_doc::Document>,
+    cache: std::sync::Arc<designcraft_compose::Cache>,
+    params: Value,
+}
+
+/// Snapshot the active document for [`PrintSnapshot::render`] (`p` as for [`print_document`]).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn print_snapshot(s: &Session, p: &Value) -> Result<PrintSnapshot> {
+    Ok(PrintSnapshot { doc: std::sync::Arc::clone(&s.doc()?.doc), cache: std::sync::Arc::clone(&s.cache), params: p.clone() })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl PrintSnapshot {
+    /// The print-ready PDF of the snapshot, exactly as [`print_document`] makes it.
+    pub fn render(&self) -> Result<PrintDocument> {
+        let (d, p) = (&*self.doc, &self.params);
+        let mut pdf = super::export::pdf_export_of(d, &self.cache, p, true)?.bytes;
+        if p.get("grayscale").and_then(Value::as_bool).unwrap_or(false) {
+            pdf = grayscale_pdf(&pdf, Some(&d.title))?;
+        }
+        // The PDF's sheets: printed as spreads, two document pages share one.
+        let pages = designcraft_render::pdf_page_count(&pdf).unwrap_or_else(|| p_pages(p, d.page_count()));
+        Ok(PrintDocument { pdf, pages, title: d.title.clone() })
     }
-    // The PDF's sheets: printed as spreads, two document pages share one.
-    let pages = designcraft_render::pdf_page_count(&pdf).unwrap_or_else(|| p_pages(p, d.page_count()));
-    Ok(PrintDocument { pdf, pages, title: d.title.clone() })
 }
 
 /// The PDF that File › Export PDF writes for `p`, as a print-only export (no annotations: links,

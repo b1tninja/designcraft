@@ -25,6 +25,12 @@ fn wait(app: &mut DesignApp, mut done: impl FnMut(&DesignApp) -> bool) {
     panic!("timed out waiting");
 }
 
+/// Press Print and wait for the worker to hand over the document, so the job has started.
+fn send(app: &mut DesignApp, params: Value) {
+    app.network_send(&params).unwrap();
+    wait(app, |a| a.net_print.preparing.is_none());
+}
+
 fn draft(app: &DesignApp) -> &net::Draft {
     &app.net_print.state.draft
 }
@@ -108,7 +114,7 @@ fn a_media_is_named_only_when_every_sheet_is_one_known_size() {
 fn a_mixed_size_document_names_no_paper_and_a_uniform_one_does() {
     let ticket = |app: &mut DesignApp, printer: &FakePrinter, n: u32| {
         app.net_print.state.draft.confirmed = true;
-        app.network_send(&json!({})).unwrap();
+        send(app, json!({}));
         wait(app, |a| matches!(draft(a).job, JobView::Finished(_)));
         printer.job(n).unwrap().ticket
     };
@@ -128,7 +134,7 @@ fn a_spreads_job_expects_the_sheets_it_sends() {
     app.run("file.new", json!({"pages": 4, "facingPages": true})).unwrap();
     query(&mut app);
     app.net_print.state.draft.confirmed = true;
-    app.network_send(&json!({"spreads": true})).unwrap();
+    send(&mut app, json!({"spreads": true}));
     let expected = draft(&app).expected_pages;
     wait(&mut app, |a| matches!(draft(a).job, JobView::Finished(_)));
     let sheets = designcraft_render::pdf_page_count(&printer.job(1).unwrap().document.unwrap()).unwrap();
@@ -143,7 +149,7 @@ fn a_job_that_ends_under_another_dialog_does_not_replace_it() {
     let (mut app, _) = app(Config::default());
     query(&mut app);
     app.net_print.state.draft.confirmed = true;
-    app.network_send(&json!({})).unwrap();
+    send(&mut app, json!({}));
     app.ui.dialog = Some(crate::dialogs::Dialog::new("pdfExport", json!({"preset": "Custom"})));
     wait(&mut app, |a| matches!(draft(a).job, JobView::Finished(_)));
     let dialog = app.ui.dialog.as_ref().expect("a dialog is open");
@@ -180,7 +186,7 @@ fn the_apps_own_print_words_are_translated() {
     app.ui.language = "de".into();
     query(&mut app);
     app.net_print.state.draft.confirmed = true;
-    app.network_send(&json!({})).unwrap();
+    send(&mut app, json!({}));
     app.ui.dialog = None;
     wait(&mut app, |a| matches!(draft(a).job, JobView::Finished(_)));
     let alert = app.ui.dialog.as_ref().expect("the alert");
@@ -231,7 +237,7 @@ fn a_confirmed_print_sends_the_exported_pages_follows_the_job_and_names_the_prin
     let name = draft(&app).printer().map(|p| p.name.clone()).unwrap();
     app.net_print.state.draft.confirmed = true;
     app.net_print.state.draft.copies = 2;
-    app.network_send(&json!({"pages": "2-3"})).unwrap();
+    send(&mut app, json!({"pages": "2-3"}));
     assert!(!draft(&app).confirmed, "the confirmation is spent by the job");
     assert!(draft(&app).running());
     let mut lines = Vec::new();
@@ -253,7 +259,7 @@ fn a_printer_that_lists_only_raster_gets_the_pages_rendered() {
     let (mut app, printer) = app(Config { formats: vec!["image/pwg-raster"], resolutions: vec![(100, 100)], ..Config::default() });
     query(&mut app);
     app.net_print.state.draft.confirmed = true;
-    app.network_send(&json!({"pages": "1"})).unwrap();
+    send(&mut app, json!({"pages": "1"}));
     wait(&mut app, |a| matches!(draft(a).job, JobView::Finished(_)));
     let doc = printer.job(1).unwrap().document.unwrap();
     assert!(doc.starts_with(b"RaS2"), "PWG raster");
@@ -264,7 +270,7 @@ fn an_aborted_job_is_reported_and_with_the_dialog_gone_the_person_is_alerted() {
     let (mut app, _) = app(Config { ending: Ending::Aborts("PrinterStopped"), ..Config::default() });
     query(&mut app);
     app.net_print.state.draft.confirmed = true;
-    app.network_send(&json!({})).unwrap();
+    send(&mut app, json!({}));
     app.ui.dialog = None;
     wait(&mut app, |a| matches!(draft(a).job, JobView::Finished(_)));
     let JobView::Finished(report) = &draft(&app).job else { panic!("finished") };
@@ -285,7 +291,7 @@ fn the_colour_choice_says_grayscale_and_a_grayscale_job_sends_gray_pages() {
     query(&mut app);
     app.net_print.state.draft.confirmed = true;
     app.net_print.state.draft.color = Some(net::ColorMode::Monochrome);
-    app.network_send(&json!({"pages": "1"})).unwrap();
+    send(&mut app, json!({"pages": "1"}));
     wait(&mut app, |a| matches!(draft(a).job, JobView::Finished(_)));
     let pdf = printer.job(1).unwrap().document.unwrap();
     let colour = designcraft_engine::print_document(&mut app.session, &json!({"pages": "1"})).unwrap().pdf;
@@ -327,4 +333,55 @@ fn a_started_job_clears_the_earlier_refusal_from_the_open_print_dialog() {
     assert!(!shown.fields.contains_key("status"), "no stale error beside a running job");
     wait(&mut app, |a| matches!(draft(a).job, JobView::Finished(_)));
     assert_eq!(printer.jobs(), 1);
+}
+
+/// The UI thread only takes a snapshot: the document is made on a worker, the job starts when the
+/// finished document is collected, and it names the sheets and paper of that document.
+#[test]
+fn print_preparation_runs_off_the_ui_thread_and_the_job_starts_when_it_is_ready() {
+    let (mut app, printer) = app(Config::default());
+    app.run("file.new", json!({"pages": 3, "preset": "A4"})).unwrap();
+    query(&mut app);
+    app.net_print.state.draft.confirmed = true;
+    let (release, gate) = mpsc::channel::<()>();
+    let rendering = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seen = Arc::clone(&rendering);
+    app.network_send_with(&json!({}), move |snapshot| {
+        seen.store(true, std::sync::atomic::Ordering::SeqCst);
+        gate.recv().unwrap();
+        snapshot.render().map_err(|e| e.to_string())
+    })
+    .unwrap();
+    // The call has returned while the render is still held back.
+    assert!(app.net_print.preparing.is_some());
+    assert!(!draft(&app).running() && draft(&app).expected_pages.is_none(), "no job yet");
+    assert_eq!(app.network_block(), Some(net::Block::Busy), "a second Print waits for the first");
+    assert!(app.network_send(&json!({})).is_err());
+    for _ in 0..5 {
+        app.poll_network();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(app.net_print.preparing.is_some() && printer.jobs() == 0, "nothing is sent while the document is made");
+    release.send(()).unwrap();
+    wait(&mut app, |a| a.net_print.preparing.is_none());
+    assert!(rendering.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(draft(&app).running(), "the collected document started the job");
+    assert!(!draft(&app).confirmed, "the confirmation is spent when the job starts");
+    assert_eq!(draft(&app).expected_pages, Some(3));
+    wait(&mut app, |a| matches!(draft(a).job, JobView::Finished(_)));
+    assert!(printer.job(1).unwrap().ticket.contains("iso_a4_210x297mm"));
+}
+
+/// A document that cannot be made says why on the status line and starts nothing.
+#[test]
+fn a_print_that_cannot_be_prepared_is_told_and_sends_nothing() {
+    let (mut app, printer) = app(Config::default());
+    query(&mut app);
+    app.net_print.state.draft.confirmed = true;
+    app.network_send_with(&json!({}), |_| Err("no pages".into())).unwrap();
+    wait(&mut app, |a| a.net_print.preparing.is_none());
+    assert_eq!(app.ui.status, "no pages");
+    assert!(!draft(&app).running());
+    assert!(draft(&app).confirmed, "the confirmation was not spent");
+    assert_eq!(printer.jobs(), 0);
 }

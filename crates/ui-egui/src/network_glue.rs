@@ -5,7 +5,10 @@
 //! mapping of craft-print's answers onto craft-ui's light types, and the wording.
 //!
 //! Not built for wasm32 (there is no socket there). All network work runs on its own threads; the UI
-//! thread only starts it and drains receivers.
+//! thread only starts it and drains receivers. Making the print-ready PDF (export, grayscale
+//! rendering) is work too: the UI thread only takes a snapshot of the document and settings
+//! (`designcraft_engine::print_snapshot`), a worker renders it, and the job starts when the UI
+//! thread collects the finished document (`poll_network`).
 //!
 //! The document is the print-ready PDF of the pages the dialog chose (`designcraft_engine::print_document`).
 //! A printer that lists PDF gets it as it is; one that lists only PWG raster gets the pages rendered by
@@ -27,6 +30,7 @@ use craft_ui::printing::network::{
     self as net, Caps, Failure, FailureKind, JobHandle, JobUpdate, Labels, Outcome, PrinterSummary, Progress, QueryPrinter, Report, Request, SendJob,
     Stage,
 };
+use designcraft_engine::{PrintDocument, PrintSnapshot};
 use designcraft_print::network::{
     self as wire, CancelToken, ColourMode, Document, Duplex, ErrorKind, Job, JobOptions, JobState, JobStatus, Orientation, Phase, PrintError,
     Printer, PrinterInfo, Quality, Resolution, Scaling, UserConfirmed, WaitPolicy, WatchOutcome, WatchStep,
@@ -65,6 +69,15 @@ pub(crate) struct NetTasks {
     /// Network printers queried in this session (reported name, address as typed), so the printer
     /// list offers them again without retyping. Memory only: nothing is written to disk.
     known: Vec<(String, String)>,
+    /// The PDF of a print being made on a worker; the job starts when it arrives.
+    preparing: Option<Preparing>,
+}
+
+/// A print whose document is being made: where it will arrive, and the person's confirmation taken
+/// when Print was pressed.
+struct Preparing {
+    document: mpsc::Receiver<Result<PrintDocument, String>>,
+    confirmed: UserConfirmed,
 }
 
 impl Default for NetTasks {
@@ -80,6 +93,7 @@ impl Default for NetTasks {
             printer: String::new(),
             shown: None,
             known: Vec::new(),
+            preparing: None,
         }
     }
 }
@@ -510,14 +524,27 @@ impl DesignApp {
 
     /// Why the network job cannot start now, when it cannot (the dialog's rules, craft-ui's).
     pub(crate) fn network_block(&self) -> Option<net::Block> {
+        if self.net_print.preparing.is_some() {
+            return Some(net::Block::Busy);
+        }
         let draft = &self.net_print.state.draft;
         draft.block(validate(&draft.normalized_url()).is_ok(), self.session.active().is_some(), FORMATS)
     }
 
     /// Export the pages `params` select (`pages`, `spreads`, `marks`, `bleed`) as the print-ready PDF and
     /// send it to the queried printer, off the UI thread. It needs the person's confirmation (the ticked
-    /// box), which it spends. `Ok(())` when a job started.
+    /// box), which it spends when the job starts. `Ok(())` when the print was taken up: the document is
+    /// made on a worker, and `poll_network` starts the job (or tells why it could not) when it is ready.
     pub(crate) fn network_send(&mut self, params: &Value) -> Result<(), String> {
+        self.network_send_with(params, |snapshot| snapshot.render().map_err(|e| e.to_string()))
+    }
+
+    /// [`Self::network_send`] with the worker's rendering step given (tests hold it back).
+    fn network_send_with(
+        &mut self,
+        params: &Value,
+        render: impl FnOnce(PrintSnapshot) -> Result<PrintDocument, String> + Send + 'static,
+    ) -> Result<(), String> {
         if let Some(block) = self.network_block() {
             let l = labels(&self.ui.language);
             let printer = self.net_print.state.draft.printer().map_or_else(String::new, |p| p.name.clone());
@@ -535,17 +562,54 @@ impl DesignApp {
         if self.net_print.state.draft.color == Some(net::ColorMode::Monochrome) {
             params["grayscale"] = json!(true);
         }
-        let doc = designcraft_engine::print_document(&mut self.session, &params).map_err(|e| e.to_string())?;
+        let snapshot = designcraft_engine::print_snapshot(&self.session, &params).map_err(|e| e.to_string())?;
         // The attestation comes from the ticked box and nothing else.
         let net = &mut self.net_print;
         let confirmed = UserConfirmed::attest(Some(net.state.draft.confirmed)).map_err(|e| e.to_string())?;
+        let (tx, document) = mpsc::channel();
+        let ctx = self.egui_ctx.clone();
+        spawn_worker(std::thread::Builder::new().name("network-print-prepare".into()), move || {
+            let _ = tx.send(render(snapshot));
+            repaint(&ctx);
+        })
+        .map_err(|f| f.detail)?;
+        net.preparing = Some(Preparing { document, confirmed });
+        net.printer = net.state.draft.printer().map(|p| p.name.clone()).unwrap_or_default();
+        net.shown = None;
+        let line = fill(labels(&self.ui.language).sending, &net.printer);
+        self.status(line);
+        Ok(())
+    }
+
+    /// Collect the document of a print being made and start its job (each frame). A document that
+    /// could not be made, or a job that cannot start now, is told on the status line and in the Print
+    /// dialog, as a refusal at the button is.
+    fn poll_prepared(&mut self) {
+        let Some(preparing) = &self.net_print.preparing else { return };
+        let made = match preparing.document.try_recv() {
+            Ok(made) => made,
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => Err(crate::i18n::tr(&self.ui.language, "the print job did not start").to_owned()),
+        };
+        let confirmed = preparing.confirmed;
+        self.net_print.preparing = None;
+        if let Err(e) = made.and_then(|doc| self.start_prepared(doc, confirmed)) {
+            if let Some(dialog) = self.ui.dialog.as_mut().filter(|d| d.id == "print") {
+                dialog.fields.insert("status".into(), json!(e));
+            }
+            self.status(e);
+        }
+    }
+
+    /// Start the job for the finished `doc`: the sheets it has and the paper they are decide what the
+    /// job expects and names.
+    fn start_prepared(&mut self, doc: PrintDocument, confirmed: UserConfirmed) -> Result<(), String> {
+        let net = &mut self.net_print;
         let sizes = designcraft_render::pdf_page_sizes(&doc.pdf).unwrap_or_default();
         let media = uniform_media(&sizes);
         let send = send_job(net.transport(), self.egui_ctx.clone(), doc.title, Arc::new(doc.pdf), Arc::clone(&net.queried), confirmed);
         // The sheets sent, not the document's pages: a spread is one sheet.
         net.state.draft.expected_pages = u32::try_from(sizes.len()).ok().filter(|&n| n > 0);
-        net.printer = net.state.draft.printer().map(|p| p.name.clone()).unwrap_or_default();
-        net.shown = None;
         let address_ok = validate(&net.state.draft.normalized_url()).is_ok();
         if net.state.start_job(&send, address_ok, true, FORMATS, media) {
             Ok(())
@@ -557,6 +621,7 @@ impl DesignApp {
     /// Collect finished work (each frame), also while the dialog is closed: the status bar names the
     /// printer at each stage, and a job that ends (or fails) with the dialog gone is told in an alert.
     pub(crate) fn poll_network(&mut self) {
+        self.poll_prepared();
         let was_running = self.net_print.state.draft.running();
         let ctx = self.egui_ctx.clone().unwrap_or_default();
         self.net_print.state.poll(&ctx);

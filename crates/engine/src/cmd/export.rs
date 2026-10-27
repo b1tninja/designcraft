@@ -970,12 +970,20 @@ pub(crate) fn pdf_export(s: &Session, p: &Value) -> Result<designcraft_pdf::Expo
 
 /// [`pdf_export`], optionally as a print-only export (`print`: no annotations, for the print path).
 pub(crate) fn pdf_export_for(s: &Session, p: &Value, print: bool) -> Result<designcraft_pdf::ExportReport> {
-    let st = s.doc()?;
-    let mut opts = options(p, st.doc.page_count())?;
+    pdf_export_of(&s.doc()?.doc, &s.cache, p, print)
+}
+
+/// [`pdf_export_for`] on a document and its render cache alone, so a snapshot of both can be exported off the session's thread.
+pub(crate) fn pdf_export_of(
+    doc: &designcraft_doc::Document,
+    cache: &designcraft_compose::Cache,
+    p: &Value,
+    print: bool,
+) -> Result<designcraft_pdf::ExportReport> {
+    let mut opts = options(p, doc.page_count())?;
     opts.print = print;
     let ppi = flatten_ppi("file.exportPdf", p)?;
-    let mut r = print_pdf(&st.doc, &s.cache, &opts, ppi)?;
-    let doc: &designcraft_doc::Document = &st.doc;
+    let mut r = print_pdf(doc, cache, &opts, ppi)?;
     let spreads = designcraft_pdf::sheet_spreads(doc, &opts);
     // Interactive PDF view options.
     let mut cat = String::new();
