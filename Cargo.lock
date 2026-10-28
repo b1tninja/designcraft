@@ -1007,7 +1007,7 @@ dependencies = [
 [[package]]
 name = "craft-job"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=refs%2Fpull%2F116%2Fhead#5dcf99d2d8329de479193269291cde28e0e284d5"
+source = "git+https://github.com/storytold/craft-libs?rev=refs%2Fpull%2F116%2Fhead#13fef4eff5428760920295e493a770f96aadeb00"
 
 [[package]]
 name = "craft-keymap"
@@ -1050,7 +1050,7 @@ dependencies = [
 [[package]]
 name = "craft-print"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=refs%2Fpull%2F116%2Fhead#5dcf99d2d8329de479193269291cde28e0e284d5"
+source = "git+https://github.com/storytold/craft-libs?rev=refs%2Fpull%2F116%2Fhead#13fef4eff5428760920295e493a770f96aadeb00"
 dependencies = [
  "craft-job",
  "craft-winprint-gdi",
@@ -1150,7 +1150,7 @@ dependencies = [
 [[package]]
 name = "craft-wsd"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=refs%2Fpull%2F116%2Fhead#5dcf99d2d8329de479193269291cde28e0e284d5"
+source = "git+https://github.com/storytold/craft-libs?rev=refs%2Fpull%2F116%2Fhead#13fef4eff5428760920295e493a770f96aadeb00"
 dependencies = [
  "roxmltree 0.21.2",
  "thiserror 2.0.21",
